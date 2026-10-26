@@ -27,10 +27,11 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Controls::{
     LIST_VIEW_ITEM_STATE_FLAGS, LVCOLUMNW, LVCF_TEXT, LVCF_WIDTH, LVIF_STATE, LVIF_TEXT, LVITEMW,
-    LVM_DELETEALLITEMS, LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_INSERTCOLUMNW,
-    LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE,
-    LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT, LVS_REPORT, LVN_ITEMCHANGED, LVIS_STATEIMAGEMASK,
-    NM_CLICK, NMHDR, NMITEMACTIVATE, NMLISTVIEW,
+    LVM_DELETEALLITEMS, LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_GETNEXTITEM,
+    LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMW,
+    LVM_SETITEMSTATE, LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT, LVS_REPORT, LVIS_FOCUSED,
+    LVIS_SELECTED, LVN_ITEMCHANGED, LVIS_STATEIMAGEMASK, LVNI_SELECTED, NM_CLICK, NMHDR,
+    NMITEMACTIVATE, NMLISTVIEW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_B,
@@ -41,6 +42,8 @@ use windows::core::{PCWSTR, PWSTR, w};
 
 const HOTKEY_ID: i32 = 1; // Ctrl+Alt+H：隐藏/显示目标
 const HOTKEY_ID_SELF: i32 = 2; // Ctrl+Alt+B：隐藏/显示 bosskey 本窗口
+const TIMER_ID: usize = 100; // 列表自动刷新（约任务管理器节奏）
+const REFRESH_MS: u32 = 2000;
 
 const IDC_LIST: usize = 101;
 const IDC_REFRESH: usize = 102;
@@ -77,10 +80,11 @@ thread_local! {
 }
 
 fn main() {
-    // 启动参数可预置目标：bosskey.exe notepad.exe ...
+    // 默认全部不勾选：启动时不从配置预载，勾选仅本次会话生效
+    // （启动参数可预置目标：bosskey.exe notepad.exe ...）
     let args: Vec<String> = std::env::args().skip(1).collect();
     TARGETS.with(|t| {
-        let mut targets = load_targets();
+        let mut targets: Vec<String> = Vec::new();
         for a in args {
             if !targets.iter().any(|x| x == &a) {
                 targets.push(a);
@@ -138,6 +142,7 @@ fn main() {
 
         build_controls(hwnd, instance);
         populate_list();
+        let _ = SetTimer(Some(hwnd), TIMER_ID, REFRESH_MS, None);
 
         if hotkey_ok && hotkey_self_ok {
             out("就绪 — Ctrl+Alt+H 隐藏/显示目标，Ctrl+Alt+B 隐藏/显示本窗口");
@@ -291,16 +296,9 @@ fn scan_apps() -> Vec<(String, String)> {
             (exe, label)
         })
         .collect();
-    apps.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
-
-    // 已配置但未运行的目标也显示出来（标注未运行）
-    TARGETS.with(|t| {
-        for name in t.borrow().iter() {
-            if !is_self(name) && !apps.iter().any(|(exe, _)| exe_matches(exe, name)) {
-                apps.push((name.clone(), format!("{name}（未运行）")));
-            }
-        }
-    });
+    apps.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    // 只显示正在运行的应用（类似任务管理器）：
+    // 已配置但未运行的目标不展示、也不从配置中删除——进程再启动时自动出现并保持勾选
     apps
 }
 
@@ -338,6 +336,85 @@ fn populate_list() {
     });
     DISPLAYED.with(|d| *d.borrow_mut() = apps.into_iter().map(|(exe, _)| exe).collect());
     POPULATING.with(|p| p.set(false));
+}
+
+/// 定时自动刷新（类似任务管理器）：
+/// 进程集合没变 -> 只原位更新文本（窗口标题会变，不闪、不动勾选与选中）
+/// 集合变了 -> 整表重建（勾选由 TARGETS 保持），并恢复选中项
+fn refresh_tick() {
+    if POPULATING.with(|p| p.get()) {
+        return;
+    }
+    let apps = scan_apps();
+    let same = DISPLAYED.with(|d| {
+        let d = d.borrow();
+        d.len() == apps.len() && d.iter().zip(apps.iter()).all(|(a, (b, _))| a == b)
+    });
+    if same {
+        UI.with(|ui| unsafe {
+            let list = ui.borrow().list;
+            for (i, (_, label)) in apps.iter().enumerate() {
+                let text = wide(label);
+                let mut item = LVITEMW {
+                    mask: LVIF_TEXT,
+                    iItem: i as i32,
+                    pszText: PWSTR(text.as_ptr() as _),
+                    ..Default::default()
+                };
+                let _ = SendMessageW(
+                    list,
+                    LVM_SETITEMW,
+                    Some(WPARAM(0)),
+                    Some(LPARAM(&mut item as *mut _ as isize)),
+                );
+            }
+        });
+    } else {
+        let selected = selected_exe();
+        populate_list();
+        if let Some(exe) = selected {
+            select_exe(&exe);
+        }
+    }
+}
+
+/// 当前选中行对应的 exe
+fn selected_exe() -> Option<String> {
+    UI.with(|ui| unsafe {
+        let idx = SendMessageW(
+            ui.borrow().list,
+            LVM_GETNEXTITEM,
+            Some(WPARAM(usize::MAX)), // -1：从头查找
+            Some(LPARAM(LVNI_SELECTED as isize)),
+        )
+        .0;
+        if idx < 0 {
+            None
+        } else {
+            DISPLAYED.with(|d| d.borrow().get(idx as usize).cloned())
+        }
+    })
+}
+
+/// 重建后恢复选中（只动选中/焦点，不动勾选态）
+fn select_exe(exe: &str) {
+    let idx = DISPLAYED.with(|d| d.borrow().iter().position(|e| e == exe));
+    if let Some(i) = idx {
+        UI.with(|ui| unsafe {
+            let mut item = LVITEMW {
+                iItem: i as i32,
+                stateMask: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0),
+                state: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_SELECTED.0 | LVIS_FOCUSED.0),
+                ..Default::default()
+            };
+            let _ = SendMessageW(
+                ui.borrow().list,
+                LVM_SETITEMSTATE,
+                Some(WPARAM(i)),
+                Some(LPARAM(&mut item as *mut _ as isize)),
+            );
+        });
+    }
 }
 
 /// 勾选变化 -> 同步 TARGETS 并保存
@@ -455,6 +532,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
                         sync_targets_from_list(); // 程序化改状态不发通知，显式同步
                     }
                 }
+            }
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            if w.0 == TIMER_ID {
+                refresh_tick();
             }
             LRESULT(0)
         }
@@ -656,18 +739,7 @@ fn config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("bosskey.targets.txt"))
 }
 
-fn load_targets() -> Vec<String> {
-    std::fs::read_to_string(config_path())
-        .map(|s| {
-            s.lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
+/// 勾选记录写入配置（仅留档，启动时不预载）
 fn save_targets(targets: &[String]) {
     let _ = std::fs::write(config_path(), format!("{}\n", targets.join("\n")));
 }

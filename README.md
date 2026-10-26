@@ -11,12 +11,12 @@ cargo build --release
 .\target\release\bosskey.exe            # 双击即用，无需安装
 ```
 
-- 界面：自动列出运行中的应用（带可见窗口的进程，**不含 bosskey 自身**），**复选框勾选**目标（勾选即保存）、**刷新列表 / 隐藏 / 显示 / 退出并恢复** 按钮
+- 界面：自动列出运行中的应用（带可见窗口的进程，**不含 bosskey 自身**），约 2 秒自动刷新（类似任务管理器）；**默认全部不勾选**，勾选仅本次会话生效；进程退出即从列表消失。按钮：**刷新列表 / 隐藏 / 显示 / 退出并恢复**
 - 全局热键：`Ctrl+Alt+H` 隐藏/显示目标，`Ctrl+Alt+B` 隐藏/显示 bosskey 本窗口
 - 目标有可见窗口 → 全部隐藏（`SW_HIDE`，任务栏按钮/Alt-Tab 项随之消失），记录 `WINDOWPLACEMENT`
 - 恢复 → 按原状态还原（位置/最小化/最大化），并激活到前台
 - 目标未运行或无窗口 → 不做处理；退出程序时自动恢复仍隐藏的窗口
-- 配置持久化：exe 同目录 `bosskey.targets.txt`；启动参数可预置目标（`bosskey.exe notepad.exe`）
+- 勾选记录写入 exe 同目录 `bosskey.targets.txt`（仅留档，启动时不预载）；启动参数可预置勾选（`bosskey.exe notepad.exe`）
 
 单文件 `bosskey.exe`（约 180KB，纯 windows-rs 无其它依赖）即完整绿色版。
 
