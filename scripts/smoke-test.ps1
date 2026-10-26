@@ -82,12 +82,24 @@ Click-Button $idcShow
 $afterShow = Get-VisibleNotepadCount
 Write-Host "[热键隐藏/按钮显示] $afterHide -> $afterShow  (期望 0 -> $before)"
 
+# 4) 本窗口独立热键（wParam=2 模拟 Ctrl+Alt+B）：隐藏再呼回
+[Win32Smoke]::PostThreadMessage($tid, $wmHotkey, [IntPtr]2, [IntPtr]0) | Out-Null
+Start-Sleep -Milliseconds 500
+$boss.Refresh()
+$selfHidden = -not [Win32Smoke]::IsWindowVisible($boss.MainWindowHandle)
+Write-Host "[本窗口热键隐藏] IsWindowVisible=$(-not $selfHidden)  (期望 False)"
+[Win32Smoke]::PostThreadMessage($tid, $wmHotkey, [IntPtr]2, [IntPtr]0) | Out-Null
+Start-Sleep -Milliseconds 500
+$boss.Refresh()
+$selfShown = [Win32Smoke]::IsWindowVisible($boss.MainWindowHandle)
+Write-Host "[本窗口热键呼回] IsWindowVisible=$selfShown  (期望 True)"
+
 Write-Host "--- bosskey 输出 ---"
 Get-Content $out -ErrorAction SilentlyContinue
 Write-Host "-------------------"
 
 Stop-Process -Id $boss.Id -Force -ErrorAction SilentlyContinue
 
-$pass = ($hiddenCount -eq 0) -and ($restoredCount -eq $before) -and ($afterHide -eq 0) -and ($afterShow -eq $before)
+$pass = ($hiddenCount -eq 0) -and ($restoredCount -eq $before) -and ($afterHide -eq 0) -and ($afterShow -eq $before) -and $selfHidden -and $selfShown
 if ($pass) { Write-Host "SMOKE TEST PASSED"; exit 0 }
 else { Write-Host "SMOKE TEST FAILED"; exit 1 }

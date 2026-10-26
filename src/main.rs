@@ -1,7 +1,8 @@
 //! bosskey — Windows 老板键（绿色版）
 //!
-//! 运行后出现界面：列出正在运行的应用（带可见窗口的进程），
-//! 复选框勾选目标，点「隐藏 / 显示」或按 Ctrl+Alt+H 操作。
+//! 运行后出现界面：列出正在运行的应用（带可见窗口的进程，不含 bosskey 自身），
+//! 复选框勾选目标，点「隐藏 / 显示」或按 Ctrl+Alt+H 操作；
+//! Ctrl+Alt+B 单独控制 bosskey 本窗口的显隐。
 //! 配置保存在 exe 同目录 bosskey.targets.txt。
 //!
 //! 行为：
@@ -27,17 +28,19 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Controls::{
     LIST_VIEW_ITEM_STATE_FLAGS, LVCOLUMNW, LVCF_TEXT, LVCF_WIDTH, LVIF_STATE, LVIF_TEXT, LVITEMW,
     LVM_DELETEALLITEMS, LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMSTATE, LVM_INSERTCOLUMNW,
-    LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVIR_BOUNDS,
+    LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE,
     LVS_EX_CHECKBOXES, LVS_EX_FULLROWSELECT, LVS_REPORT, LVN_ITEMCHANGED, LVIS_STATEIMAGEMASK,
     NM_CLICK, NMHDR, NMITEMACTIVATE, NMLISTVIEW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_H,
+    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_B,
+    VK_H,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, PWSTR, w};
 
-const HOTKEY_ID: i32 = 1;
+const HOTKEY_ID: i32 = 1; // Ctrl+Alt+H：隐藏/显示目标
+const HOTKEY_ID_SELF: i32 = 2; // Ctrl+Alt+B：隐藏/显示 bosskey 本窗口
 
 const IDC_LIST: usize = 101;
 const IDC_REFRESH: usize = 102;
@@ -54,6 +57,7 @@ struct HiddenWindow {
 
 #[derive(Default)]
 struct Ui {
+    main: HWND,
     list: HWND,
     status: HWND,
 }
@@ -66,6 +70,7 @@ thread_local! {
     static DISPLAYED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static POPULATING: Cell<bool> = const { Cell::new(false) };
     static UI: RefCell<Ui> = const { RefCell::new(Ui {
+        main: HWND(std::ptr::null_mut()),
         list: HWND(std::ptr::null_mut()),
         status: HWND(std::ptr::null_mut()),
     }) };
@@ -86,9 +91,11 @@ fn main() {
 
     let module = unsafe { GetModuleHandleW(None).unwrap_or_default() };
     let instance = HINSTANCE(module.0);
-    let hotkey_ok = unsafe {
+    let (hotkey_ok, hotkey_self_ok) = unsafe {
         let mods: HOT_KEY_MODIFIERS = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT;
-        RegisterHotKey(Some(HWND::default()), HOTKEY_ID, mods, VK_H.0 as u32).is_ok()
+        let a = RegisterHotKey(Some(HWND::default()), HOTKEY_ID, mods, VK_H.0 as u32).is_ok();
+        let b = RegisterHotKey(Some(HWND::default()), HOTKEY_ID_SELF, mods, VK_B.0 as u32).is_ok();
+        (a, b)
     };
 
     unsafe {
@@ -132,10 +139,12 @@ fn main() {
         build_controls(hwnd, instance);
         populate_list();
 
-        if hotkey_ok {
-            out("就绪 — 勾选目标后按 Ctrl+Alt+H 或点按钮操作");
+        if hotkey_ok && hotkey_self_ok {
+            out("就绪 — Ctrl+Alt+H 隐藏/显示目标，Ctrl+Alt+B 隐藏/显示本窗口");
+        } else if hotkey_ok {
+            out("就绪 — Ctrl+Alt+B 注册失败（被占用），本窗口显隐热键不可用");
         } else {
-            out("热键 Ctrl+Alt+H 注册失败（被占用），仅界面可用");
+            out("热键注册失败（被占用），仅界面按钮可用");
         }
 
         let mut msg = MSG::default();
@@ -143,7 +152,11 @@ fn main() {
             // 线程热键的 WM_HOTKEY 带空 hwnd，DispatchMessage 不会路由到窗口过程，
             // 必须在这里直接处理
             if msg.message == WM_HOTKEY {
-                do_toggle();
+                match msg.wParam.0 as i32 {
+                    x if x == HOTKEY_ID => do_toggle(),
+                    x if x == HOTKEY_ID_SELF => do_toggle_self(),
+                    _ => {}
+                }
                 continue;
             }
             let _ = TranslateMessage(&msg);
@@ -151,6 +164,7 @@ fn main() {
         }
 
         let _ = UnregisterHotKey(Some(HWND::default()), HOTKEY_ID);
+        let _ = UnregisterHotKey(Some(HWND::default()), HOTKEY_ID_SELF);
     }
 }
 
@@ -211,7 +225,7 @@ unsafe fn build_controls(parent: HWND, instance: HINSTANCE) {
     let status = mk(w!("STATIC"), w!(""), WINDOW_STYLE(0), 12, 288, 432, 36, IDC_STATUS);
     mk(
         w!("STATIC"),
-        w!("热键 Ctrl+Alt+H 切换 · 勾选即保存 · 退出时自动恢复已隐藏窗口"),
+        w!("热键 Ctrl+Alt+H 隐藏/显示目标 · Ctrl+Alt+B 隐藏/显示本窗口 · 勾选即保存 · 退出时自动恢复已隐藏窗口"),
         WINDOW_STYLE(0),
         12, 336, 432, 40,
         IDC_HINT,
@@ -219,6 +233,7 @@ unsafe fn build_controls(parent: HWND, instance: HINSTANCE) {
 
     UI.with(|ui| {
         let mut ui = ui.borrow_mut();
+        ui.main = parent;
         ui.list = list;
         ui.status = status;
     });
@@ -245,7 +260,7 @@ fn scan_apps() -> Vec<(String, String)> {
             return TRUE;
         }
         let exe = ctx.cache.entry(pid).or_insert_with(|| exe_name_of(pid).unwrap_or_default());
-        if exe.is_empty() {
+        if exe.is_empty() || is_self(exe) {
             return TRUE;
         }
         ctx.found.entry(exe.clone()).or_insert_with(|| {
@@ -281,7 +296,7 @@ fn scan_apps() -> Vec<(String, String)> {
     // 已配置但未运行的目标也显示出来（标注未运行）
     TARGETS.with(|t| {
         for name in t.borrow().iter() {
-            if !apps.iter().any(|(exe, _)| exe_matches(exe, name)) {
+            if !is_self(name) && !apps.iter().any(|(exe, _)| exe_matches(exe, name)) {
                 apps.push((name.clone(), format!("{name}（未运行）")));
             }
         }
@@ -356,7 +371,9 @@ fn sync_targets_from_list() {
         let mut next: Vec<String> = t
             .borrow()
             .iter()
-            .filter(|x| !DISPLAYED.with(|d| d.borrow().iter().any(|e| exe_matches(e, x))))
+            .filter(|x| {
+                !is_self(x) && !DISPLAYED.with(|d| d.borrow().iter().any(|e| exe_matches(e, x)))
+            })
             .cloned()
             .collect();
         for e in checked {
@@ -455,6 +472,21 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
 }
 
 // ---------------- 隐藏 / 显示 ----------------
+
+/// bosskey 本窗口显隐（独立热键 Ctrl+Alt+B）
+fn do_toggle_self() {
+    let hwnd = UI.with(|ui| ui.borrow().main);
+    unsafe {
+        if IsWindowVisible(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+            let _ = writeln!(std::io::stdout(), "本窗口已隐藏（Ctrl+Alt+B 呼回）");
+        } else {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(hwnd);
+            out("本窗口已显示");
+        }
+    }
+}
 
 fn do_toggle() {
     let has_hidden = HIDDEN.with(|h| !h.borrow().is_empty());
@@ -560,7 +592,7 @@ fn collect_visible_windows(targets: &[String]) -> Vec<HWND> {
         }
 
         let exe = ctx.exe_cache.entry(pid).or_insert_with(|| exe_name_of(pid).unwrap_or_default());
-        if !exe.is_empty() && ctx.targets.iter().any(|t| exe_matches(t, exe)) {
+        if !exe.is_empty() && !is_self(exe) && ctx.targets.iter().any(|t| exe_matches(t, exe)) {
             ctx.out.push(hwnd);
         }
         TRUE
@@ -604,6 +636,15 @@ fn exe_matches(target: &str, exe: &str) -> bool {
         s.strip_suffix(".exe").unwrap_or(&s).to_string()
     }
     norm(target) == norm(exe)
+}
+
+/// 是否是 bosskey 自身进程（从列表与隐藏目标中排除）
+fn is_self(exe: &str) -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .map(|own| own.trim().eq_ignore_ascii_case(exe.trim()))
+        .unwrap_or(false)
 }
 
 // ---------------- 配置 / 辅助 ----------------
