@@ -2,8 +2,8 @@
 //!
 //! 运行后出现界面：列出正在运行的应用（带可见窗口的进程，不含 bosskey 自身），
 //! 复选框勾选目标，点「隐藏 / 显示」或按 Ctrl+Alt+H 操作；
-//! Ctrl+Alt+B 单独控制 bosskey 本窗口的显隐。
-//! 配置保存在 exe 同目录 bosskey.targets.txt。
+//! Ctrl+Alt+B 控制 bosskey 本体（窗口 + 托盘图标）的显隐。
+//! 点窗口 X = 后台运行（驻留托盘图标）；托盘菜单或「退出并恢复」按钮才真正退出。
 //!
 //! 行为：
 //! - 目标进程有可见顶层窗口：隐藏全部（SW_HIDE，任务栏按钮随之消失），记录 WINDOWPLACEMENT
@@ -18,7 +18,9 @@ use std::io::Write;
 use std::mem::size_of;
 use std::path::PathBuf;
 
-use windows::Win32::Foundation::{CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, RECT, TRUE, WPARAM};
+use windows::Win32::Foundation::{
+    CloseHandle, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{DEFAULT_GUI_FONT, GetStockObject};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
@@ -37,13 +39,21 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_B,
     VK_H,
 };
+use windows::Win32::UI::Shell::{
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS,
+    Shell_NotifyIconW,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, PWSTR, w};
 
 const HOTKEY_ID: i32 = 1; // Ctrl+Alt+H：隐藏/显示目标
-const HOTKEY_ID_SELF: i32 = 2; // Ctrl+Alt+B：隐藏/显示 bosskey 本窗口
+const HOTKEY_ID_SELF: i32 = 2; // Ctrl+Alt+B：隐藏/显示 bosskey 本体（窗口+托盘）
 const TIMER_ID: usize = 100; // 列表自动刷新（约任务管理器节奏）
 const REFRESH_MS: u32 = 2000;
+const WM_TRAYICON: u32 = WM_APP + 1;
+const TRAY_UID: u32 = 1;
+const IDM_SHOW: usize = 201;
+const IDM_EXIT: usize = 202;
 
 const IDC_LIST: usize = 101;
 const IDC_REFRESH: usize = 102;
@@ -72,6 +82,7 @@ thread_local! {
     // 列表项与 exe 名一一对应
     static DISPLAYED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static POPULATING: Cell<bool> = const { Cell::new(false) };
+    static TRAY_ADDED: Cell<bool> = const { Cell::new(false) };
     static UI: RefCell<Ui> = const { RefCell::new(Ui {
         main: HWND(std::ptr::null_mut()),
         list: HWND(std::ptr::null_mut()),
@@ -143,11 +154,12 @@ fn main() {
         build_controls(hwnd, instance);
         populate_list();
         let _ = SetTimer(Some(hwnd), TIMER_ID, REFRESH_MS, None);
+        tray_add();
 
         if hotkey_ok && hotkey_self_ok {
-            out("就绪 — Ctrl+Alt+H 隐藏/显示目标，Ctrl+Alt+B 隐藏/显示本窗口");
+            out("就绪 — Ctrl+Alt+H 隐藏/显示目标 · Ctrl+Alt+B 隐藏/显示本体");
         } else if hotkey_ok {
-            out("就绪 — Ctrl+Alt+B 注册失败（被占用），本窗口显隐热键不可用");
+            out("就绪 — Ctrl+Alt+B 注册失败（被占用），本体显隐热键不可用");
         } else {
             out("热键注册失败（被占用），仅界面按钮可用");
         }
@@ -230,7 +242,7 @@ unsafe fn build_controls(parent: HWND, instance: HINSTANCE) {
     let status = mk(w!("STATIC"), w!(""), WINDOW_STYLE(0), 12, 288, 432, 36, IDC_STATUS);
     mk(
         w!("STATIC"),
-        w!("热键 Ctrl+Alt+H 隐藏/显示目标 · Ctrl+Alt+B 隐藏/显示本窗口 · 勾选即保存 · 退出时自动恢复已隐藏窗口"),
+        w!("Ctrl+Alt+H 目标显隐 · Ctrl+Alt+B 本体显隐（窗口+托盘图标） · 关窗口=后台驻托盘 · 退出时自动恢复目标"),
         WINDOW_STYLE(0),
         12, 336, 432, 40,
         IDC_HINT,
@@ -473,9 +485,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
                 }
                 x if x == IDC_HIDE as usize => do_hide(),
                 x if x == IDC_SHOW as usize => do_show(),
-                x if x == IDC_EXIT as usize => {
-                    let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-                }
+                x if x == IDC_EXIT as usize => do_exit(),
                 _ => {}
             }
             LRESULT(0)
@@ -541,9 +551,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
             }
             LRESULT(0)
         }
+        WM_TRAYICON => {
+            match l.0 as u32 {
+                x if x == WM_LBUTTONUP || x == WM_LBUTTONDBLCLK => show_self_window(),
+                x if x == WM_RBUTTONUP => tray_menu(hwnd),
+                _ => {}
+            }
+            LRESULT(0)
+        }
         WM_CLOSE => {
-            do_show(); // 退出前恢复仍隐藏的窗口
-            let _ = DestroyWindow(hwnd);
+            // 后台运行模式：关窗口不退出，驻留托盘
+            let _ = ShowWindow(hwnd, SW_HIDE);
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -554,20 +572,118 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
     }
 }
 
-// ---------------- 隐藏 / 显示 ----------------
+// ---------------- 托盘 / 本体显隐 ----------------
 
-/// bosskey 本窗口显隐（独立热键 Ctrl+Alt+B）
-fn do_toggle_self() {
+/// 添加托盘图标（常驻；Ctrl+Alt+B 可整体隐藏）
+fn tray_add() {
+    if TRAY_ADDED.with(|t| t.get()) {
+        return;
+    }
+    unsafe {
+        let hwnd = UI.with(|ui| ui.borrow().main);
+        let module = GetModuleHandleW(None).unwrap_or_default();
+        let icon = LoadIconW(Some(HINSTANCE(module.0)), PCWSTR(1usize as *mut u16)).unwrap_or_default();
+        let mut nid = NOTIFYICONDATAW {
+            cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: hwnd,
+            uID: TRAY_UID,
+            uFlags: NOTIFY_ICON_DATA_FLAGS(NIF_ICON.0 | NIF_MESSAGE.0 | NIF_TIP.0),
+            uCallbackMessage: WM_TRAYICON,
+            hIcon: icon,
+            ..Default::default()
+        };
+        let tip = wide("BossKey — 老板键");
+        let n = tip.len().min(127);
+        nid.szTip[..n].copy_from_slice(&tip[..n]);
+        if Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
+            TRAY_ADDED.with(|t| t.set(true));
+        }
+    }
+}
+
+fn tray_delete() {
+    if !TRAY_ADDED.with(|t| t.get()) {
+        return;
+    }
+    unsafe {
+        let hwnd = UI.with(|ui| ui.borrow().main);
+        let nid = NOTIFYICONDATAW {
+            cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: hwnd,
+            uID: TRAY_UID,
+            ..Default::default()
+        };
+        let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+        TRAY_ADDED.with(|t| t.set(false));
+    }
+}
+
+/// 托盘右键菜单
+fn tray_menu(hwnd: HWND) {
+    unsafe {
+        let menu = CreatePopupMenu().unwrap_or_default();
+        let t1 = wide("显示主窗口");
+        let t2 = wide("退出（恢复目标）");
+        let _ = AppendMenuW(menu, MF_STRING, IDM_SHOW, PCWSTR(t1.as_ptr()));
+        let _ = AppendMenuW(menu, MF_STRING, IDM_EXIT, PCWSTR(t2.as_ptr()));
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        // 经典 quirk：不先把窗口设为前台，菜单弹出后不会自动消失
+        let _ = SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(
+            menu,
+            windows::Win32::UI::WindowsAndMessaging::TRACK_POPUP_MENU_FLAGS(
+                TPM_RIGHTBUTTON.0 | TPM_RETURNCMD.0,
+            ),
+            pt.x,
+            pt.y,
+            None,
+            hwnd,
+            None,
+        );
+        let _ = DestroyMenu(menu);
+        match cmd.0 as usize {
+            x if x == IDM_SHOW => show_self_window(),
+            x if x == IDM_EXIT => do_exit(),
+            _ => {}
+        }
+    }
+}
+
+fn show_self_window() {
     let hwnd = UI.with(|ui| ui.borrow().main);
     unsafe {
-        if IsWindowVisible(hwnd).as_bool() {
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+/// 真正退出：恢复目标窗口、移除托盘、销毁主窗口
+fn do_exit() {
+    do_show();
+    tray_delete();
+    let hwnd = UI.with(|ui| ui.borrow().main);
+    unsafe {
+        let _ = DestroyWindow(hwnd);
+    }
+}
+
+// ---------------- 隐藏 / 显示 ----------------
+
+/// bosskey 本体显隐（独立热键 Ctrl+Alt+B）：窗口 + 托盘图标一起显/一起隐
+fn do_toggle_self() {
+    let hwnd = UI.with(|ui| ui.borrow().main);
+    let visible = unsafe { IsWindowVisible(hwnd).as_bool() } || TRAY_ADDED.with(|t| t.get());
+    if visible {
+        unsafe {
             let _ = ShowWindow(hwnd, SW_HIDE);
-            let _ = writeln!(std::io::stdout(), "本窗口已隐藏（Ctrl+Alt+B 呼回）");
-        } else {
-            let _ = ShowWindow(hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(hwnd);
-            out("本窗口已显示");
         }
+        tray_delete();
+        let _ = writeln!(std::io::stdout(), "本体已隐藏（窗口+托盘图标，Ctrl+Alt+B 呼回）");
+    } else {
+        show_self_window();
+        tray_add();
+        out("本体已显示（窗口+托盘图标）");
     }
 }
 
