@@ -1,6 +1,6 @@
 [package]
 name = "bosskey"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 description = "Windows 老板键：一键隐藏/显示指定程序的窗口与任务栏按钮"
 
@@ -13,7 +13,9 @@ windows = { version = "0.61", features = [
     "Win32_UI_Controls",
     "Win32_UI_Shell",
     "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
 ] }
 
 [build-dependencies]

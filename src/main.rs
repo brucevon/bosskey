@@ -23,6 +23,12 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Gdi::{DEFAULT_GUI_FONT, GetStockObject};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Registry::{
+    HKEY_CURRENT_USER, KEY_READ, REG_SZ, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW,
+};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
     QueryFullProcessImageNameW,
@@ -40,11 +46,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_H,
 };
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS,
-    Shell_NotifyIconW,
+    NIF_GUID, NIF_ICON, NIF_MESSAGE, NIF_STATE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NIS_HIDDEN, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER, NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_STATE,
+    Shell_NotifyIconGetRect, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{PCWSTR, PWSTR, w};
+use windows::core::{GUID, PCWSTR, PWSTR, w};
 
 const HOTKEY_ID: i32 = 1; // Ctrl+Alt+H：隐藏/显示目标
 const HOTKEY_ID_SELF: i32 = 2; // Ctrl+Alt+B：隐藏/显示 bosskey 本体（窗口+托盘）
@@ -83,6 +90,8 @@ thread_local! {
     static DISPLAYED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static POPULATING: Cell<bool> = const { Cell::new(false) };
     static TRAY_ADDED: Cell<bool> = const { Cell::new(false) };
+    // 隐藏时记录的托盘图标（恢复用）
+    static HIDDEN_TRAY: RefCell<Vec<IconId>> = const { RefCell::new(Vec::new()) };
     static UI: RefCell<Ui> = const { RefCell::new(Ui {
         main: HWND(std::ptr::null_mut()),
         list: HWND(std::ptr::null_mut()),
@@ -308,10 +317,336 @@ fn scan_apps() -> Vec<(String, String)> {
             (exe, label)
         })
         .collect();
+    // 并入「无可见窗口、只有托盘图标」的应用
+    for exe in tray_apps() {
+        if !apps.iter().any(|(e, _)| exe_matches(e, &exe)) {
+            apps.push((exe.clone(), exe.clone()));
+        }
+    }
     apps.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
     // 只显示正在运行的应用（类似任务管理器）：
     // 已配置但未运行的目标不展示、也不从配置中删除——进程再启动时自动出现并保持勾选
     apps
+}
+
+/// NotifyIconSettings 中的一条托盘图标记录（属主 exe + 图标身份）
+struct TrayRegEntry {
+    exe: String,
+    uid: Option<u32>,
+    guid: Option<GUID>,
+}
+
+/// 托盘图标身份（探测到属主窗口后确定）
+#[derive(Clone, Copy)]
+struct IconId {
+    hwnd: HWND,
+    uid: u32,
+    guid: Option<GUID>,
+}
+
+/// 读取 Win11 托盘图标注册表（每个托盘图标一条：ExecutablePath / UID / IconGuid）
+fn tray_registry_entries() -> Vec<TrayRegEntry> {
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{HKEY, REG_DWORD, REG_VALUE_TYPE};
+
+    let mut out: Vec<TrayRegEntry> = Vec::new();
+    unsafe {
+        let mut root = HKEY::default();
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            w!("Control Panel\\NotifyIconSettings"),
+            None,
+            KEY_READ,
+            &mut root,
+        ) != ERROR_SUCCESS
+        {
+            return out;
+        }
+        let mut idx = 0u32;
+        loop {
+            let mut name = [0u16; 256];
+            let mut name_len = name.len() as u32;
+            if RegEnumKeyExW(
+                root,
+                idx,
+                Some(PWSTR(name.as_mut_ptr())),
+                &mut name_len,
+                None,
+                None,
+                None,
+                None,
+            ) != ERROR_SUCCESS
+            {
+                break;
+            }
+            idx += 1;
+            let mut sub = HKEY::default();
+            if RegOpenKeyExW(root, PCWSTR(name.as_ptr()), None, KEY_READ, &mut sub) != ERROR_SUCCESS
+            {
+                continue;
+            }
+
+            // ExecutablePath -> exe 名
+            let mut buf = [0u16; 520];
+            let mut size = (buf.len() * 2) as u32;
+            let mut ty = REG_VALUE_TYPE::default();
+            let q = RegQueryValueExW(
+                sub,
+                w!("ExecutablePath"),
+                None,
+                Some(&mut ty),
+                Some(buf.as_mut_ptr() as *mut u8),
+                Some(&mut size),
+            );
+            if q != ERROR_SUCCESS || ty != REG_SZ {
+                RegCloseKey(sub).ok();
+                continue;
+            }
+            let n = (size / 2) as usize;
+            let path = String::from_utf16_lossy(&buf[..n.saturating_sub(1)]);
+            let path = path.trim().trim_matches('"');
+            let exe = path.rsplit(['\\', '/']).next().unwrap_or("").to_string();
+            if exe.is_empty() || is_self(&exe) {
+                RegCloseKey(sub).ok();
+                continue;
+            }
+
+            // UID（图标身份之一）
+            let mut uid: Option<u32> = None;
+            let mut dv = [0u8; 4];
+            let mut dsize = 4u32;
+            let mut dty = REG_VALUE_TYPE::default();
+            if RegQueryValueExW(
+                sub,
+                w!("UID"),
+                None,
+                Some(&mut dty),
+                Some(dv.as_mut_ptr()),
+                Some(&mut dsize),
+            ) == ERROR_SUCCESS
+                && dty == REG_DWORD
+            {
+                uid = Some(u32::from_le_bytes(dv));
+            }
+
+            // IconGuid（GUID 图标身份）
+            let mut guid: Option<GUID> = None;
+            let mut gbuf = [0u16; 64];
+            let mut gsize = (gbuf.len() * 2) as u32;
+            let mut gty = REG_VALUE_TYPE::default();
+            if RegQueryValueExW(
+                sub,
+                w!("IconGuid"),
+                None,
+                Some(&mut gty),
+                Some(gbuf.as_mut_ptr() as *mut u8),
+                Some(&mut gsize),
+            ) == ERROR_SUCCESS
+                && gty == REG_SZ
+            {
+                let gn = (gsize / 2) as usize;
+                let gs = String::from_utf16_lossy(&gbuf[..gn.saturating_sub(1)]);
+                if !gs.trim().is_empty() {
+                    guid = parse_guid(&gs);
+                }
+            }
+            RegCloseKey(sub).ok();
+
+            if guid.is_some() || uid.is_some() {
+                out.push(TrayRegEntry { exe, uid, guid });
+            }
+        }
+        RegCloseKey(root).ok();
+    }
+    out
+}
+
+fn parse_guid(s: &str) -> Option<GUID> {
+    let s = s.trim().trim_matches(['{', '}']);
+    let p: Vec<&str> = s.split('-').collect();
+    if p.len() != 5 {
+        return None;
+    }
+    let h = format!("{}{}", p[3], p[4]);
+    let mut data4 = [0u8; 8];
+    for i in 0..8 {
+        data4[i] = u8::from_str_radix(h.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(GUID {
+        data1: u32::from_str_radix(p[0], 16).ok()?,
+        data2: u16::from_str_radix(p[1], 16).ok()?,
+        data3: u16::from_str_radix(p[2], 16).ok()?,
+        data4,
+    })
+}
+
+/// 托盘图标属主进程（无可见窗口但有托盘图标的应用，仅保留仍在运行的）
+fn tray_apps() -> Vec<String> {
+    let running = running_exe_names();
+    let mut exes: Vec<String> = Vec::new();
+    for e in tray_registry_entries() {
+        if !exes.iter().any(|x| exe_matches(x, &e.exe))
+            && running.iter().any(|r| exe_matches(&e.exe, r))
+        {
+            exes.push(e.exe);
+        }
+    }
+    exes
+}
+
+/// 当前运行中的 (pid, exe 名)
+fn running_processes() -> Vec<(u32, String)> {
+    let mut list = Vec::new();
+    unsafe {
+        let snap = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+            Ok(h) => h,
+            Err(_) => return list,
+        };
+        let mut pe = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snap, &mut pe).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(&pe.szExeFile)
+                    .trim_end_matches('\0')
+                    .to_string();
+                if !name.is_empty() {
+                    list.push((pe.th32ProcessID, name));
+                }
+                if Process32NextW(snap, &mut pe).is_err() {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap).ok();
+    }
+    list
+}
+
+fn running_exe_names() -> Vec<String> {
+    running_processes().into_iter().map(|(_, n)| n).collect()
+}
+
+/// 目标进程的候选图标属主窗口：全部顶层窗口（含隐藏）+ 消息窗口
+fn candidate_windows(pids: &[u32]) -> Vec<HWND> {
+    struct Ctx<'a> {
+        pids: &'a [u32],
+        out: Vec<HWND>,
+    }
+
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
+        let ctx = &mut *(lparam.0 as *mut Ctx);
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid != 0 && ctx.pids.contains(&pid) {
+            ctx.out.push(hwnd);
+        }
+        TRUE
+    }
+
+    let mut ctx = Ctx {
+        pids,
+        out: Vec::new(),
+    };
+    unsafe {
+        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut ctx as *mut _ as isize));
+        // 消息窗口（EnumWindows 不覆盖 HWND_MESSAGE 的子窗口）
+        let msg_parent = HWND(-3isize as *mut c_void); // HWND_MESSAGE
+        let mut prev = HWND::default();
+        loop {
+            match FindWindowExW(Some(msg_parent), Some(prev), PCWSTR::null(), PCWSTR::null()) {
+                Ok(h) => {
+                    let mut pid = 0u32;
+                    GetWindowThreadProcessId(h, Some(&mut pid));
+                    if pid != 0 && ctx.pids.contains(&pid) {
+                        ctx.out.push(h);
+                    }
+                    prev = h;
+                }
+                Err(_) => break,
+            }
+        }
+    }
+    ctx.out
+}
+
+/// 解析 exe 的托盘图标身份：注册表记录（UID/IconGuid）x 候选属主窗口，
+/// 用 Shell_NotifyIconGetRect 探测命中（只读，无副作用）
+fn discover_tray_icons(exe: &str, pids: &[u32]) -> Vec<IconId> {
+    let entries: Vec<TrayRegEntry> = tray_registry_entries()
+        .into_iter()
+        .filter(|e| exe_matches(&e.exe, exe))
+        .collect();
+    if entries.is_empty() || pids.is_empty() {
+        return Vec::new();
+    }
+    let candidates = if entries.iter().any(|e| e.guid.is_none()) {
+        candidate_windows(pids)
+    } else {
+        Vec::new()
+    };
+    let mut found = Vec::new();
+    for e in entries {
+        if let Some(g) = e.guid {
+            let ident = NOTIFYICONIDENTIFIER {
+                cbSize: size_of::<NOTIFYICONIDENTIFIER>() as u32,
+                hWnd: HWND::default(),
+                uID: 0,
+                guidItem: g,
+            };
+            if unsafe { Shell_NotifyIconGetRect(&ident).is_ok() } {
+                found.push(IconId {
+                    hwnd: HWND::default(),
+                    uid: 0,
+                    guid: Some(g),
+                });
+            }
+        } else if let Some(uid) = e.uid {
+            for &hwnd in &candidates {
+                let ident = NOTIFYICONIDENTIFIER {
+                    cbSize: size_of::<NOTIFYICONIDENTIFIER>() as u32,
+                    hWnd: hwnd,
+                    uID: uid,
+                    guidItem: GUID::zeroed(),
+                };
+                if unsafe { Shell_NotifyIconGetRect(&ident).is_ok() } {
+                    found.push(IconId {
+                        hwnd,
+                        uid,
+                        guid: None,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    found
+}
+
+/// 隐藏/显示 托盘图标：跨进程 NIM_MODIFY + NIS_HIDDEN（参考软件 主路径，可逆）
+fn set_icon_hidden(id: &IconId, hidden: bool) -> bool {
+    unsafe {
+        let mut nid = NOTIFYICONDATAW {
+            cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+            hWnd: id.hwnd,
+            uID: id.uid,
+            uFlags: NOTIFY_ICON_DATA_FLAGS(
+                NIF_STATE.0 | if id.guid.is_some() { NIF_GUID.0 } else { 0 },
+            ),
+            dwState: if hidden {
+                NIS_HIDDEN
+            } else {
+                NOTIFY_ICON_STATE(0)
+            },
+            dwStateMask: NIS_HIDDEN,
+            ..Default::default()
+        };
+        if let Some(g) = id.guid {
+            nid.guidItem = g;
+        }
+        Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool()
+    }
 }
 
 /// 重建列表（含勾选状态）
@@ -704,9 +1039,25 @@ fn do_hide() {
         out("尚未勾选目标——点击列表行即可勾选，再点「隐藏」");
         return;
     }
+
+    // 自动判断：窗口（可能没有）+ 托盘图标（可能没有），有啥藏啥
     let windows = collect_visible_windows(&targets);
-    if windows.is_empty() {
-        out("未找到可隐藏的窗口（目标未运行或已隐藏）");
+    let mut icons: Vec<IconId> = Vec::new();
+    let procs = running_processes();
+    for t in &targets {
+        let pids: Vec<u32> = procs
+            .iter()
+            .filter(|(_, name)| exe_matches(t, name))
+            .map(|(pid, _)| *pid)
+            .collect();
+        for id in discover_tray_icons(t, &pids) {
+            if !icons.iter().any(|x| x.hwnd == id.hwnd && x.uid == id.uid) {
+                icons.push(id);
+            }
+        }
+    }
+    if windows.is_empty() && icons.is_empty() {
+        out("未找到可隐藏的窗口或托盘图标（目标未运行或已隐藏）");
         return;
     }
 
@@ -732,7 +1083,21 @@ fn do_hide() {
             }
         }
     });
-    out(&format!("已隐藏 {hid} 个窗口"));
+
+    let mut hid_icons = 0u32;
+    HIDDEN_TRAY.with(|t| {
+        let mut hidden = t.borrow_mut();
+        for id in icons {
+            if set_icon_hidden(&id, true) {
+                hidden.push(id);
+                hid_icons += 1;
+            }
+        }
+    });
+
+    out(&format!(
+        "已隐藏 {hid} 个窗口、{hid_icons} 个托盘图标"
+    ));
 }
 
 fn do_show() {
@@ -758,10 +1123,22 @@ fn do_show() {
             let _ = SetForegroundWindow(hwnd);
         }
     }
-    if restored > 0 {
-        out(&format!("已显示 {restored} 个窗口"));
+
+    let mut restored_icons = 0u32;
+    HIDDEN_TRAY.with(|t| {
+        for id in t.borrow_mut().drain(..) {
+            if set_icon_hidden(&id, false) {
+                restored_icons += 1;
+            }
+        }
+    });
+
+    if restored > 0 || restored_icons > 0 {
+        out(&format!(
+            "已显示 {restored} 个窗口、{restored_icons} 个托盘图标"
+        ));
     } else {
-        out("当前没有已隐藏的窗口");
+        out("当前没有已隐藏的窗口或托盘图标");
     }
 }
 
