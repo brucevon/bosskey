@@ -8,29 +8,99 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, S
 use crate::backend::Evt;
 use crate::core::{self, Engine};
 
-// ---------------- 配色（设计稿 token）----------------
+// ---------------- 配色（深色=设计稿 token；浅色=同构亮色）----------------
 
-const BG: Color32 = Color32::from_rgb(0x09, 0x09, 0x0B);
-const BG_HEADER: Color32 = Color32::from_rgb(0x12, 0x12, 0x15);
-const PANEL: Color32 = Color32::from_rgb(0x18, 0x18, 0x1B);
-const CARD: Color32 = Color32::from_rgb(0x27, 0x27, 0x2A);
-const BORDER: Color32 = Color32::from_rgb(0x3F, 0x3F, 0x46);
-const BORDER_SOFT: Color32 = Color32::from_rgb(0x2E, 0x2E, 0x33);
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub bg: Color32,
+    pub bg_header: Color32,
+    pub panel: Color32,
+    pub card: Color32,
+    pub border: Color32,
+    pub border_soft: Color32,
+    pub text: Color32,
+    pub text_dim: Color32,
+    pub text_mute: Color32,
+    pub indigo: Color32,
+    pub indigo_soft: Color32,
+    pub amber: Color32,
+    pub amber_dk: Color32,
+    pub rose: Color32,
+    pub rose_bg: Color32,
+    pub rose_bd: Color32,
+    pub emerald: Color32,
+    pub emerald_bg: Color32,
+    pub emerald_bd: Color32,
+    pub amber_bg: Color32,
+    pub amber_fg: Color32,
+    pub checked_bg: Color32,
+    pub hot_bg: Color32,
+    pub kbd_accent: Color32,
+}
 
-const TEXT: Color32 = Color32::from_rgb(0xF4, 0xF4, 0xF5);
-const TEXT_DIM: Color32 = Color32::from_rgb(0xA1, 0xA1, 0xAA);
-const TEXT_MUTE: Color32 = Color32::from_rgb(0x71, 0x71, 0x7A);
+fn rgb(r: u8, g: u8, b: u8) -> Color32 {
+    Color32::from_rgb(r, g, b)
+}
 
-const INDIGO: Color32 = Color32::from_rgb(0x63, 0x66, 0xF1);
-const AMBER: Color32 = Color32::from_rgb(0xF5, 0x9E, 0x0B);
-const AMBER_DK: Color32 = Color32::from_rgb(0xD9, 0x77, 0x06);
-const ROSE: Color32 = Color32::from_rgb(0xFB, 0x71, 0x85);
-const ROSE_BG: Color32 = Color32::from_rgb(0x2A, 0x12, 0x18);
-const ROSE_BD: Color32 = Color32::from_rgb(0x8F, 0x2A, 0x3E);
-const EMERALD: Color32 = Color32::from_rgb(0x34, 0xD3, 0x99);
-const EMERALD_BG: Color32 = Color32::from_rgb(0x05, 0x2E, 0x22);
-const AMBER_BG: Color32 = Color32::from_rgb(0x45, 0x1A, 0x03);
-const AMBER_FG: Color32 = Color32::from_rgb(0xFB, 0xBF, 0x24);
+impl Palette {
+    fn dark() -> Self {
+        Palette {
+            bg: rgb(0x09, 0x09, 0x0B),
+            bg_header: rgb(0x12, 0x12, 0x15),
+            panel: rgb(0x18, 0x18, 0x1B),
+            card: rgb(0x27, 0x27, 0x2A),
+            border: rgb(0x3F, 0x3F, 0x46),
+            border_soft: rgb(0x2E, 0x2E, 0x33),
+            text: rgb(0xF4, 0xF4, 0xF5),
+            text_dim: rgb(0xA1, 0xA1, 0xAA),
+            text_mute: rgb(0x71, 0x71, 0x7A),
+            indigo: rgb(0x63, 0x66, 0xF1),
+            indigo_soft: rgb(0x81, 0x8C, 0xF8),
+            amber: rgb(0xF5, 0x9E, 0x0B),
+            amber_dk: rgb(0xD9, 0x77, 0x06),
+            rose: rgb(0xFB, 0x71, 0x85),
+            rose_bg: rgb(0x2A, 0x12, 0x18),
+            rose_bd: rgb(0x8F, 0x2A, 0x3E),
+            emerald: rgb(0x34, 0xD3, 0x99),
+            emerald_bg: rgb(0x05, 0x2E, 0x22),
+            emerald_bd: rgb(0x05, 0x96, 0x69),
+            amber_bg: rgb(0x45, 0x1A, 0x03),
+            amber_fg: rgb(0xFB, 0xBF, 0x24),
+            checked_bg: rgb(0x1E, 0x1B, 0x2E),
+            hot_bg: rgb(0x23, 0x23, 0x28),
+            kbd_accent: rgb(0xA5, 0xB4, 0xFC),
+        }
+    }
+
+    fn light() -> Self {
+        Palette {
+            bg: rgb(0xF8, 0xFA, 0xFC),
+            bg_header: rgb(0xEE, 0xF2, 0xF6),
+            panel: rgb(0xFF, 0xFF, 0xFF),
+            card: rgb(0xE7, 0xED, 0xF3),
+            border: rgb(0xCB, 0xD5, 0xE1),
+            border_soft: rgb(0xDC, 0xE3, 0xEB),
+            text: rgb(0x0F, 0x17, 0x2A),
+            text_dim: rgb(0x47, 0x55, 0x69),
+            text_mute: rgb(0x8A, 0x97, 0xA5),
+            indigo: rgb(0x4F, 0x46, 0xE5),
+            indigo_soft: rgb(0x4F, 0x46, 0xE5),
+            amber: rgb(0xF5, 0x9E, 0x0B),
+            amber_dk: rgb(0xD9, 0x77, 0x06),
+            rose: rgb(0xE1, 0x1D, 0x48),
+            rose_bg: rgb(0xFF, 0xE4, 0xE6),
+            rose_bd: rgb(0xFB, 0x71, 0x85),
+            emerald: rgb(0x05, 0x96, 0x69),
+            emerald_bg: rgb(0xD1, 0xFA, 0xE5),
+            emerald_bd: rgb(0x34, 0xD3, 0x99),
+            amber_bg: rgb(0xFE, 0xF3, 0xC7),
+            amber_fg: rgb(0xB4, 0x53, 0x09),
+            checked_bg: rgb(0xEE, 0xF2, 0xFF),
+            hot_bg: rgb(0xE7, 0xED, 0xF3),
+            kbd_accent: rgb(0x4F, 0x46, 0xE5),
+        }
+    }
+}
 
 const ROW_H: f32 = 40.0;
 
@@ -49,6 +119,7 @@ pub struct BossKeyApp {
     self_visible: bool,
     last_scan: Instant,
     maxed: bool,
+    theme_light: bool,
 }
 
 impl BossKeyApp {
@@ -63,6 +134,7 @@ impl BossKeyApp {
             self_visible: true,
             last_scan: Instant::now() - Duration::from_secs(10),
             maxed: false,
+            theme_light: true,
         };
         app.rescan();
         app
@@ -92,6 +164,14 @@ impl BossKeyApp {
             })
             .map(|r| (r.exe.clone(), r.title.clone()))
             .collect()
+    }
+
+    fn palette(light: bool) -> Palette {
+        if light {
+            Palette::light()
+        } else {
+            Palette::dark()
+        }
     }
 
     fn checked(&self, exe: &str) -> bool {
@@ -159,24 +239,30 @@ impl eframe::App for BossKeyApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let win = frame.winit_window().cloned();
+        let c = Self::palette(self.theme_light);
+        ctx.set_visuals(if self.theme_light {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        });
         // ---- 背景 ----
         let full = ui.max_rect();
-        ui.painter().rect_filled(full, 0.0, BG);
+        ui.painter().rect_filled(full, 0.0, c.bg);
 
         // ================= 标题栏 =================
         egui::Panel::top("titlebar")
             .exact_size(44.0)
-            .frame(egui::Frame::NONE.fill(BG_HEADER))
+            .frame(egui::Frame::NONE.fill(c.bg_header))
             .show(ui, |ui| {
                 let drag = ui.interact(ui.max_rect(), ui.id().with("title_drag"), Sense::click_and_drag());
                 if drag.dragged() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
-                ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add_space(14.0);
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(28.0, 28.0), Sense::hover());
                     let painter = ui.painter();
-                    painter.rect_filled(rect, 7.0, INDIGO);
+                    painter.rect_filled(rect, 7.0, c.indigo);
                     painter.text(
                         rect.center(),
                         Align2::CENTER_CENTER,
@@ -185,48 +271,52 @@ impl eframe::App for BossKeyApp {
                         Color32::WHITE,
                     );
                     ui.add_space(8.0);
-                    ui.label(RichText::new("BossKey").size(15.0).strong().color(TEXT));
+                    ui.label(RichText::new("BossKey").size(15.0).strong().color(c.text));
                     ui.add_space(6.0);
                     ui.label(
                         RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
                             .size(10.0)
                             .monospace()
-                            .color(TEXT_MUTE),
+                            .color(c.text_mute),
                     );
                     ui.add_space(10.0);
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(118.0, 24.0), Sense::hover());
-                    ui.painter().rect_filled(rect, 12.0, EMERALD_BG);
+                    ui.painter().rect_filled(rect, 12.0, c.emerald_bg);
                     ui.painter().rect_stroke(
                         rect,
                         12.0,
-                        Stroke::new(1.0, Color32::from_rgb(0x05, 0x96, 0x69)),
+                        Stroke::new(1.0, c.emerald_bd),
                         egui::StrokeKind::Inside,
                     );
                     ui.painter().circle_filled(
                         Pos2::new(rect.left() + 12.0, rect.center().y),
                         3.0,
-                        EMERALD,
+                        c.emerald,
                     );
                     ui.painter().text(
                         Pos2::new(rect.left() + 22.0, rect.center().y),
                         Align2::LEFT_CENTER,
                         "后台守护中",
                         FontId::proportional(11.0),
-                        EMERALD,
+                        c.emerald,
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(8.0);
-                        if title_btn(ui, "✕", Some(ROSE)) {
+                        if win_btn(ui, c, 2) {
                             self.self_visible = false;
                             core::set_self_visible(false);
                         }
-                        if title_btn(ui, "▢", None) {
+                        if win_btn(ui, c, 1) {
                             self.maxed = !self.maxed;
                             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(self.maxed));
                         }
-                        if title_btn(ui, "—", None) {
+                        if win_btn(ui, c, 0) {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                        ui.add_space(10.0);
+                        if theme_btn(ui, c, self.theme_light) {
+                            self.theme_light = !self.theme_light;
                         }
                     });
                 });
@@ -235,21 +325,21 @@ impl eframe::App for BossKeyApp {
         // ================= 快捷键栏 =================
         egui::Panel::top("hotkeys")
             .exact_size(52.0)
-            .frame(egui::Frame::NONE.fill(PANEL))
+            .frame(egui::Frame::NONE.fill(c.panel))
             .show(ui, |ui| {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
-                    ui.label(RichText::new("一键隐藏目标:").size(11.0).color(TEXT_MUTE));
-                    kbd_chip(ui, "Ctrl + Alt + H", true);
+                    ui.label(RichText::new("一键隐藏目标:").size(11.0).color(c.text_mute));
+                    kbd_chip(ui, c, "Ctrl + Alt + H", true);
                     ui.add_space(16.0);
-                    ui.label(RichText::new("本体验隐:").size(11.0).color(TEXT_MUTE));
-                    kbd_chip(ui, "Ctrl + Alt + B", false);
+                    ui.label(RichText::new("本体验隐:").size(11.0).color(c.text_mute));
+                    kbd_chip(ui, c, "Ctrl + Alt + B", false);
                     ui.add_space(16.0);
                     ui.label(
                         RichText::new("关闭窗口即退居系统托盘")
                             .size(11.0)
-                            .color(TEXT_MUTE),
+                            .color(c.text_mute),
                     );
                 });
             });
@@ -257,22 +347,22 @@ impl eframe::App for BossKeyApp {
         // ================= 底栏 =================
         egui::Panel::bottom("footer")
             .exact_size(76.0)
-            .frame(egui::Frame::NONE.fill(BG_HEADER))
+            .frame(egui::Frame::NONE.fill(c.bg_header))
             .show(ui, |ui| {
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
-                    if chip_button(ui, "参数设置", CARD, BORDER, TEXT_DIM, 108.0) {
+                    if chip_button(ui, "参数设置", c.card, c.border, c.border, c.text_dim, 108.0) {
                         self.settings_open = true;
                     }
                     ui.add_space(10.0);
-                    if chip_button(ui, "恢复并彻底退出", ROSE_BG, ROSE_BD, ROSE, 160.0) {
+                    if chip_button(ui, "恢复并彻底退出", c.rose_bg, c.rose_bg, c.rose_bd, c.rose, 160.0) {
                         self.engine.do_exit();
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(20.0);
-                        if chip_button(ui, "一键恢复显示", INDIGO, INDIGO, Color32::WHITE, 150.0)
+                        if chip_button(ui, "一键恢复显示", c.indigo, c.indigo, c.indigo, Color32::WHITE, 150.0)
                         {
                             let msg = self.engine.do_show();
                             self.toast(&msg);
@@ -281,8 +371,9 @@ impl eframe::App for BossKeyApp {
                         if chip_button(
                             ui,
                             "立即隐藏选中目标",
-                            AMBER_DK,
-                            AMBER,
+                            c.amber_dk,
+                            c.amber,
+                            c.amber,
                             Color32::WHITE,
                             170.0,
                         ) {
@@ -295,7 +386,7 @@ impl eframe::App for BossKeyApp {
 
         // ================= 主体 =================
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(BG))
+            .frame(egui::Frame::NONE.fill(c.bg))
             .show(ui, |ui| {
                 ui.add_space(14.0);
                 // 工具栏
@@ -307,11 +398,11 @@ impl eframe::App for BossKeyApp {
                     ui.add(te);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(20.0);
-                        if chip_button(ui, "刷新进程", CARD, BORDER, TEXT_DIM, 110.0) {
+                        if chip_button(ui, "刷新进程", c.card, c.border, c.border, c.text_dim, 110.0) {
                             self.rescan();
                         }
                         ui.add_space(8.0);
-                        if chip_button(ui, "全选 / 反选", CARD, BORDER, TEXT_DIM, 126.0) {
+                        if chip_button(ui, "全选 / 反选", c.card, c.border, c.border, c.text_dim, 126.0) {
                             let rows = self.filtered_rows();
                             let all = rows.iter().all(|(exe, _)| self.checked(exe));
                             let mut t = self.engine.targets.clone();
@@ -330,7 +421,7 @@ impl eframe::App for BossKeyApp {
                         ui.label(
                             RichText::new(format!("已勾选 {} 项", n))
                                 .size(11.0)
-                                .color(Color32::from_rgb(0x81, 0x8C, 0xF8)),
+                                .color(c.indigo_soft),
                         );
                     });
                 });
@@ -343,8 +434,8 @@ impl eframe::App for BossKeyApp {
                     Pos2::new(panel_rect.left() + 20.0, panel_rect.top()),
                     Vec2::new(panel_rect.width() - 40.0, panel_rect.height() - 14.0),
                 );
-                ui.painter().rect_filled(rows_rect, 12.0, PANEL);
-                ui.painter().rect_stroke(rows_rect, 12.0, Stroke::new(1.0, BORDER_SOFT), egui::StrokeKind::Inside);
+                ui.painter().rect_filled(rows_rect, 12.0, c.panel);
+                ui.painter().rect_stroke(rows_rect, 12.0, Stroke::new(1.0, c.border_soft), egui::StrokeKind::Inside);
 
                 let head_y = rows_rect.top() + 16.0;
                 let painter = ui.painter();
@@ -353,28 +444,28 @@ impl eframe::App for BossKeyApp {
                     Align2::LEFT_CENTER,
                     "应用进程名称",
                     FontId::proportional(11.0),
-                    TEXT_MUTE,
+                    c.text_mute,
                 );
                 painter.text(
                     Pos2::new(rows_rect.left() + 280.0, head_y),
                     Align2::LEFT_CENTER,
                     "匹配窗口标题 / 描述",
                     FontId::proportional(11.0),
-                    TEXT_MUTE,
+                    c.text_mute,
                 );
                 painter.text(
                     Pos2::new(rows_rect.right() - 80.0, head_y),
                     Align2::CENTER_CENTER,
                     "状态",
                     FontId::proportional(11.0),
-                    TEXT_MUTE,
+                    c.text_mute,
                 );
                 painter.line_segment(
                     [
                         Pos2::new(rows_rect.left(), rows_rect.top() + 32.0),
                         Pos2::new(rows_rect.right(), rows_rect.top() + 32.0),
                     ],
-                    Stroke::new(1.0, BORDER_SOFT),
+                    Stroke::new(1.0, c.border_soft),
                 );
 
                 // 行（可滚动）
@@ -396,11 +487,11 @@ impl eframe::App for BossKeyApp {
                             let hot = resp.hovered();
                             let painter = ui.painter();
                             let bgc = if checked {
-                                Color32::from_rgb(0x1E, 0x1B, 0x2E)
+                                c.checked_bg
                             } else if hot {
-                                Color32::from_rgb(0x23, 0x23, 0x28)
+                                c.hot_bg
                             } else {
-                                PANEL
+                                c.panel
                             };
                             painter.rect_filled(rect, 4.0, bgc);
 
@@ -410,7 +501,7 @@ impl eframe::App for BossKeyApp {
                                 Vec2::new(18.0, 18.0),
                             );
                             if checked {
-                                painter.rect_filled(cb, 5.0, INDIGO);
+                                painter.rect_filled(cb, 5.0, c.indigo);
                                 let tick = Stroke::new(2.0, Color32::WHITE);
                                 painter.line_segment(
                                     [
@@ -427,14 +518,14 @@ impl eframe::App for BossKeyApp {
                                     tick,
                                 );
                             } else {
-                                painter.rect_filled(cb, 5.0, BG);
-                                painter.rect_stroke(cb, 5.0, Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+                                painter.rect_filled(cb, 5.0, c.bg);
+                                painter.rect_stroke(cb, 5.0, Stroke::new(1.0, c.border), egui::StrokeKind::Inside);
                             }
                             let chip = Rect::from_min_size(
                                 Pos2::new(rect.left() + 52.0, cy - 11.0),
                                 Vec2::new(22.0, 22.0),
                             );
-                            painter.rect_filled(chip, 6.0, CARD);
+                            painter.rect_filled(chip, 6.0, c.card);
                             let letter: String =
                                 exe.chars().take(1).collect::<String>().to_uppercase();
                             painter.text(
@@ -442,26 +533,26 @@ impl eframe::App for BossKeyApp {
                                 Align2::CENTER_CENTER,
                                 letter,
                                 FontId::monospace(11.0),
-                                TEXT_DIM,
+                                c.text_dim,
                             );
                             painter.text(
                                 Pos2::new(rect.left() + 84.0, cy),
                                 Align2::LEFT_CENTER,
                                 exe,
                                 FontId::monospace(13.0),
-                                TEXT,
+                                c.text,
                             );
                             painter.text(
                                 Pos2::new(rect.left() + 262.0, cy),
                                 Align2::LEFT_CENTER,
                                 title,
                                 FontId::proportional(12.5),
-                                TEXT_DIM,
+                                c.text_dim,
                             );
                             let (label, fg, bg) = if hidden {
-                                ("已隐藏", AMBER_FG, AMBER_BG)
+                                ("已隐藏", c.amber_fg, c.amber_bg)
                             } else {
-                                ("显示中", EMERALD, EMERALD_BG)
+                                ("显示中", c.emerald, c.emerald_bg)
                             };
                             let pill = Rect::from_center_size(
                                 Pos2::new(rect.right() - 52.0, cy),
@@ -497,13 +588,13 @@ impl eframe::App for BossKeyApp {
                 .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ui, |ui| {
                     ui.add_space(6.0);
-                    ui.label(RichText::new("全局隐藏目标热键").size(11.0).color(TEXT_DIM));
+                    ui.label(RichText::new("全局隐藏目标热键").size(11.0).color(c.text_dim));
                     ui.add_space(2.0);
-                    kbd_chip(ui, "Ctrl + Alt + H", true);
+                    kbd_chip(ui, c, "Ctrl + Alt + H", true);
                     ui.add_space(8.0);
-                    ui.label(RichText::new("本体呼出/隐藏热键").size(11.0).color(TEXT_DIM));
+                    ui.label(RichText::new("本体呼出/隐藏热键").size(11.0).color(c.text_dim));
                     ui.add_space(2.0);
-                    kbd_chip(ui, "Ctrl + Alt + B", false);
+                    kbd_chip(ui, c, "Ctrl + Alt + B", false);
                     ui.add_space(12.0);
                     ui.separator();
                     ui.add_space(6.0);
@@ -531,7 +622,7 @@ impl eframe::App for BossKeyApp {
                     ui.label(
                         RichText::new("热键暂不支持自定义 · 改动即时生效并保存")
                             .size(10.0)
-                            .color(TEXT_MUTE),
+                            .color(c.text_mute),
                     );
                 });
             self.settings_open = open;
@@ -546,7 +637,7 @@ impl eframe::App for BossKeyApp {
                     .show(ui, |ui| {
                         let text_size = ui
                             .painter()
-                            .layout_no_wrap(msg.clone(), FontId::proportional(12.5), TEXT)
+                            .layout_no_wrap(msg.clone(), FontId::proportional(12.5), c.text)
                             .size();
                         let rect = Rect::from_min_size(
                             ui.cursor().min,
@@ -554,19 +645,19 @@ impl eframe::App for BossKeyApp {
                         );
                         ui.allocate_rect(rect, Sense::hover());
                         let painter = ui.painter();
-                        painter.rect_filled(rect, 10.0, CARD);
-                        painter.rect_stroke(rect, 10.0, Stroke::new(1.0, INDIGO), egui::StrokeKind::Inside);
+                        painter.rect_filled(rect, 10.0, c.card);
+                        painter.rect_stroke(rect, 10.0, Stroke::new(1.0, c.indigo), egui::StrokeKind::Inside);
                         painter.circle_filled(
                             Pos2::new(rect.left() + 20.0, rect.center().y),
                             5.0,
-                            EMERALD,
+                            c.emerald,
                         );
                         painter.text(
                             Pos2::new(rect.left() + 36.0, rect.center().y),
                             Align2::LEFT_CENTER,
                             msg,
                             FontId::proportional(12.5),
-                            TEXT,
+                            c.text,
                         );
                     });
             } else {
@@ -578,45 +669,97 @@ impl eframe::App for BossKeyApp {
 
 // ---------------- 小组件 ----------------
 
-fn title_btn(ui: &mut egui::Ui, glyph: &str, hover: Option<Color32>) -> bool {
+/// 窗口按钮：矢量绘制（0=最小化 1=最大化 2=关闭），不依赖字形
+fn win_btn(ui: &mut egui::Ui, c: Palette, icon: u8) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(36.0, 30.0), Sense::click());
     let painter = ui.painter();
-    if resp.hovered() {
-        if let Some(c) = hover {
-            painter.rect_filled(rect, 6.0, c);
-        } else {
-            painter.rect_filled(rect, 6.0, CARD);
+    let hot = resp.hovered();
+    if hot {
+        painter.rect_filled(rect, 6.0, if icon == 2 { c.rose } else { c.card });
+    }
+    let col = if hot && icon == 2 {
+        Color32::WHITE
+    } else {
+        c.text_dim
+    };
+    let ctr = rect.center();
+    let st = Stroke::new(1.4, col);
+    match icon {
+        0 => {
+            // 最小化：横线
+            painter.line_segment(
+                [Pos2::new(ctr.x - 5.5, ctr.y), Pos2::new(ctr.x + 5.5, ctr.y)],
+                st,
+            );
+        }
+        1 => {
+            // 最大化：方框
+            painter.rect_stroke(
+                Rect::from_center_size(ctr, Vec2::new(11.0, 11.0)),
+                1.5,
+                st,
+                egui::StrokeKind::Inside,
+            );
+        }
+        _ => {
+            // 关闭：叉
+            painter.line_segment(
+                [Pos2::new(ctr.x - 5.0, ctr.y - 5.0), Pos2::new(ctr.x + 5.0, ctr.y + 5.0)],
+                st,
+            );
+            painter.line_segment(
+                [Pos2::new(ctr.x - 5.0, ctr.y + 5.0), Pos2::new(ctr.x + 5.0, ctr.y - 5.0)],
+                st,
+            );
         }
     }
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        glyph,
-        FontId::proportional(13.0),
-        if resp.hovered() && hover.is_some() {
-            Color32::WHITE
-        } else {
-            TEXT_DIM
-        },
-    );
     resp.clicked()
 }
 
-fn kbd_chip(ui: &mut egui::Ui, text: &str, accent: bool) {
+/// 主题切换按钮：太阳（亮色激活）/ 月牙（暗色激活）
+fn theme_btn(ui: &mut egui::Ui, c: Palette, light: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(36.0, 30.0), Sense::click());
+    let painter = ui.painter();
+    let hot = resp.hovered();
+    if hot {
+        painter.rect_filled(rect, 6.0, c.card);
+    }
+    let col = if hot { c.text } else { c.text_dim };
+    let ctr = rect.center();
+    let st = Stroke::new(1.3, col);
+    if light {
+        // 太阳：圆 + 八道光芒
+        painter.circle_stroke(ctr, 4.5, st);
+        for i in 0..8 {
+            let a = std::f32::consts::FRAC_PI_4 * i as f32;
+            let (s, cs) = a.sin_cos();
+            painter.line_segment(
+                [
+                    Pos2::new(ctr.x + 6.5 * cs, ctr.y + 6.5 * s),
+                    Pos2::new(ctr.x + 9.0 * cs, ctr.y + 9.0 * s),
+                ],
+                st,
+            );
+        }
+    } else {
+        // 月牙：大圆 + 底色小圆遮出缺口
+        painter.circle_stroke(ctr, 6.0, st);
+        painter.circle_filled(Pos2::new(ctr.x + 3.0, ctr.y - 2.5), 5.0, c.bg_header);
+    }
+    resp.clicked()
+}
+
+fn kbd_chip(ui: &mut egui::Ui, c: Palette, text: &str, accent: bool) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(118.0, 26.0), Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, 4.0, CARD);
-    painter.rect_stroke(rect, 4.0, Stroke::new(1.0, BORDER), egui::StrokeKind::Inside);
+    painter.rect_filled(rect, 4.0, c.card);
+    painter.rect_stroke(rect, 4.0, Stroke::new(1.0, c.border), egui::StrokeKind::Inside);
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
         text,
         FontId::monospace(11.0),
-        if accent {
-            Color32::from_rgb(0xA5, 0xB4, 0xFC)
-        } else {
-            Color32::from_rgb(0xD4, 0xD4, 0xD8)
-        },
+        if accent { c.kbd_accent } else { c.text_dim },
     );
 }
 
@@ -624,13 +767,14 @@ fn chip_button(
     ui: &mut egui::Ui,
     text: &str,
     bg: Color32,
+    hover_bg: Color32,
     border: Color32,
     fg: Color32,
     width: f32,
 ) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 36.0), Sense::click());
     let painter = ui.painter();
-    let bgc = if resp.hovered() && bg == CARD { BORDER } else { bg };
+    let bgc = if resp.hovered() { hover_bg } else { bg };
     painter.rect_filled(rect, 8.0, bgc);
     painter.rect_stroke(rect, 8.0, Stroke::new(1.0, border), egui::StrokeKind::Inside);
     painter.text(
