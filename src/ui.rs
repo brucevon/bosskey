@@ -340,7 +340,19 @@ impl eframe::App for BossKeyApp {
                             .color(c.text_mute),
                     );
                     ui.add_space(10.0);
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(118.0, 24.0), Sense::hover());
+                    // 徽章宽度随文字自适应
+                    let badge_text = "后台守护中";
+                    let tw = ui
+                        .painter()
+                        .layout_no_wrap(
+                            badge_text.to_string(),
+                            FontId::proportional(11.0),
+                            c.emerald,
+                        )
+                        .size()
+                        .x;
+                    let (rect, _) =
+                        ui.allocate_exact_size(Vec2::new(tw + 44.0, 24.0), Sense::hover());
                     ui.painter().rect_filled(rect, 12.0, c.emerald_bg);
                     ui.painter().rect_stroke(
                         rect,
@@ -387,14 +399,12 @@ impl eframe::App for BossKeyApp {
             .exact_size(52.0)
             .frame(egui::Frame::NONE.fill(c.panel))
             .show(ui, |ui| {
-                ui.add_space(12.0);
+                ui.add_space(13.0);
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
-                    ui.label(RichText::new("一键隐藏目标:").size(11.0).color(c.text_mute));
-                    kbd_chip(ui, c, "Ctrl + Alt + H", true);
+                    label_chip(ui, c, "一键隐藏目标:", "Ctrl + Alt + H", true);
                     ui.add_space(16.0);
-                    ui.label(RichText::new("本体验隐:").size(11.0).color(c.text_mute));
-                    kbd_chip(ui, c, "Ctrl + Alt + B", false);
+                    label_chip(ui, c, "本体验隐:", "Ctrl + Alt + B", false);
                     ui.add_space(16.0);
                     ui.label(
                         RichText::new("关闭窗口即退居系统托盘")
@@ -423,7 +433,7 @@ impl eframe::App for BossKeyApp {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(20.0);
-                        if chip_button(ui, "一键恢复显示", c.indigo, c.indigo, c.indigo, Color32::WHITE, 150.0)
+                        if chip_button(ui, "恢复选中", c.indigo, c.indigo, c.indigo, Color32::WHITE, 96.0)
                         {
                             let msg = self.engine.do_show();
                             self.toast(&msg);
@@ -431,12 +441,12 @@ impl eframe::App for BossKeyApp {
                         ui.add_space(10.0);
                         if chip_button(
                             ui,
-                            "立即隐藏选中目标",
+                            "隐藏选中",
                             c.amber_dk,
                             c.amber,
                             c.amber,
                             Color32::WHITE,
-                            170.0,
+                            96.0,
                         ) {
                             let msg = self.engine.do_hide();
                             self.toast(&msg);
@@ -837,9 +847,7 @@ fn theme_btn(ui: &mut egui::Ui, c: Palette, light: bool) -> bool {
     resp.clicked()
 }
 
-fn kbd_chip(ui: &mut egui::Ui, c: Palette, text: &str, accent: bool) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(118.0, 26.0), Sense::hover());
-    let painter = ui.painter();
+fn paint_kbd(painter: &egui::Painter, c: Palette, rect: Rect, text: &str, accent: bool) {
     painter.rect_filled(rect, 4.0, c.card);
     painter.rect_stroke(rect, 4.0, Stroke::new(1.0, c.border), egui::StrokeKind::Inside);
     painter.text(
@@ -849,6 +857,35 @@ fn kbd_chip(ui: &mut egui::Ui, c: Palette, text: &str, accent: bool) {
         FontId::monospace(11.0),
         if accent { c.kbd_accent } else { c.text_dim },
     );
+}
+
+fn kbd_chip(ui: &mut egui::Ui, c: Palette, text: &str, accent: bool) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(118.0, 26.0), Sense::hover());
+    paint_kbd(ui.painter(), c, rect, text, accent);
+}
+
+/// 「标签 + 键帽」同轴行：文字与键帽垂直居中对齐
+fn label_chip(ui: &mut egui::Ui, c: Palette, label: &str, keys: &str, accent: bool) {
+    let lw = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), FontId::proportional(11.0), c.text_mute)
+        .size()
+        .x;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(lw + 8.0 + 118.0, 26.0), Sense::hover());
+    let painter = ui.painter();
+    let cy = rect.center().y;
+    painter.text(
+        Pos2::new(rect.left(), cy),
+        Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(11.0),
+        c.text_mute,
+    );
+    let chip = Rect::from_min_size(
+        Pos2::new(rect.left() + lw + 8.0, rect.top()),
+        Vec2::new(118.0, 26.0),
+    );
+    paint_kbd(painter, c, chip, keys, accent);
 }
 
 fn chip_button(
