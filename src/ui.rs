@@ -121,6 +121,7 @@ pub struct BossKeyApp {
     maxed: bool,
     theme_light: bool,
     logo: Option<egui::TextureHandle>,
+    exiting: bool,
 }
 
 impl BossKeyApp {
@@ -137,6 +138,7 @@ impl BossKeyApp {
             maxed: false,
             theme_light: true,
             logo: None,
+            exiting: false,
         };
         app.rescan();
         app
@@ -217,6 +219,7 @@ impl eframe::App for BossKeyApp {
                 }
                 Evt::Exit => {
                     self.engine.do_exit();
+                    self.exiting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
@@ -224,6 +227,10 @@ impl eframe::App for BossKeyApp {
 
         // ---- 关窗（Alt+F4/系统关闭）→ 后台 ----
         if ctx.input(|i| i.viewport().close_requested()) {
+            if self.exiting {
+                return; // 真正退出：放行关闭
+            }
+            // 后台模式：拦截关窗，转驻托盘
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.self_visible = false;
             core::set_self_visible(false);
@@ -363,6 +370,7 @@ impl eframe::App for BossKeyApp {
                     ui.add_space(10.0);
                     if chip_button(ui, "恢复并彻底退出", c.rose_bg, c.rose_bg, c.rose_bd, c.rose, 160.0) {
                         self.engine.do_exit();
+                        self.exiting = true;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
