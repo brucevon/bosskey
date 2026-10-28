@@ -477,14 +477,22 @@ pub fn parse_guid(s: &str) -> Option<GUID> {
     })
 }
 
-/// 托盘图标属主进程（无可见窗口、仅托盘图标的应用，仅保留仍在运行的）
+/// 托盘图标属主进程（无可见窗口、仅托盘图标的应用）
+/// NotifyIconSettings 是历史记录——必须逐个探测图标当前存活（Shell_NotifyIconGetRect），
+/// 否则纯后台进程（曾注册过图标但已注销）会混入列表
 pub fn tray_apps() -> Vec<String> {
-    let running = running_exe_names();
+    let procs = running_processes();
     let mut exes: Vec<String> = Vec::new();
     for e in tray_registry_entries() {
-        if !exes.iter().any(|x| exe_matches(x, &e.exe))
-            && running.iter().any(|r| exe_matches(&e.exe, r))
-        {
+        if exes.iter().any(|x| exe_matches(x, &e.exe)) {
+            continue;
+        }
+        let pids: Vec<u32> = procs
+            .iter()
+            .filter(|(_, n)| exe_matches(&e.exe, n))
+            .map(|(p, _)| *p)
+            .collect();
+        if !pids.is_empty() && !discover_tray_icons(&e.exe, &pids).is_empty() {
             exes.push(e.exe);
         }
     }
