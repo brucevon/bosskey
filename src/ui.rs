@@ -106,6 +106,7 @@ const ROW_H: f32 = 40.0;
 
 struct Row {
     exe: String,
+    name: String,
     title: String,
 }
 
@@ -122,6 +123,9 @@ pub struct BossKeyApp {
     theme_light: bool,
     logo: Option<egui::TextureHandle>,
     exiting: bool,
+    names: std::collections::HashMap<String, String>,
+    icons: std::collections::HashMap<String, egui::TextureHandle>,
+    pending_icons: std::collections::HashMap<String, Vec<u8>>,
 }
 
 impl BossKeyApp {
@@ -139,6 +143,9 @@ impl BossKeyApp {
             theme_light: true,
             logo: None,
             exiting: false,
+            names: std::collections::HashMap::new(),
+            icons: std::collections::HashMap::new(),
+            pending_icons: std::collections::HashMap::new(),
         };
         app.rescan();
         app
@@ -146,10 +153,31 @@ impl BossKeyApp {
 
     fn rescan(&mut self) {
         let apps = self.engine.scan_apps();
-        self.rows = apps
-            .into_iter()
-            .map(|(exe, title)| Row { exe, title })
-            .collect();
+        let mut rows = Vec::with_capacity(apps.len());
+        for (exe, title) in apps {
+            if !self.names.contains_key(&exe) {
+                let (name, icon) = core::exe_shell_info(&exe);
+                if let Some(n) = name {
+                    self.names.insert(exe.clone(), n);
+                }
+                if let Some(rgba) = icon {
+                    self.pending_icons.insert(exe.clone(), rgba);
+                }
+            }
+            let name = self
+                .names
+                .get(&exe)
+                .cloned()
+                .unwrap_or_else(|| {
+                    if title.is_empty() {
+                        exe.clone()
+                    } else {
+                        title.clone()
+                    }
+                });
+            rows.push(Row { exe, name, title });
+        }
+        self.rows = rows;
         self.last_scan = Instant::now();
     }
 
@@ -157,16 +185,17 @@ impl BossKeyApp {
         self.toast = Some((msg.to_string(), Instant::now()));
     }
 
-    fn filtered_rows(&self) -> Vec<(String, String)> {
+    fn filtered_rows(&self) -> Vec<(String, String, String)> {
         let q = self.search.trim().to_lowercase();
         self.rows
             .iter()
             .filter(|r| {
                 q.is_empty()
                     || r.exe.to_lowercase().contains(&q)
+                    || r.name.to_lowercase().contains(&q)
                     || r.title.to_lowercase().contains(&q)
             })
-            .map(|r| (r.exe.clone(), r.title.clone()))
+            .map(|r| (r.exe.clone(), r.name.clone(), r.title.clone()))
             .collect()
     }
 
@@ -175,6 +204,22 @@ impl BossKeyApp {
             Palette::light()
         } else {
             Palette::dark()
+        }
+    }
+
+    /// 将待处理图标转为 egui 纹理（每 exe 一次）
+    fn ensure_icons(&mut self, ctx: &egui::Context) {
+        let pending: Vec<(String, Vec<u8>)> = self
+            .pending_icons
+            .drain()
+            .collect();
+        for (exe, rgba) in pending {
+            if self.icons.contains_key(&exe) {
+                continue;
+            }
+            let img = egui::ColorImage::from_rgba_unmultiplied([32, 32], &rgba);
+            let handle = ctx.load_texture(format!("app-icon-{exe}"), img, Default::default());
+            self.icons.insert(exe, handle);
         }
     }
 
@@ -249,6 +294,7 @@ impl eframe::App for BossKeyApp {
         let ctx = ui.ctx().clone();
         let win = frame.winit_window().cloned();
         let c = Self::palette(self.theme_light);
+        self.ensure_icons(&ctx);
         if self.logo.is_none() {
             let img = egui::ColorImage::from_rgba_unmultiplied(
                 [64, 64],
@@ -417,9 +463,9 @@ impl eframe::App for BossKeyApp {
                         ui.add_space(8.0);
                         if chip_button(ui, "全选 / 反选", c.card, c.border, c.border, c.text_dim, 126.0) {
                             let rows = self.filtered_rows();
-                            let all = rows.iter().all(|(exe, _)| self.checked(exe));
+                            let all = rows.iter().all(|(exe, _, _)| self.checked(exe));
                             let mut t = self.engine.targets.clone();
-                            for (exe, _) in &rows {
+                            for (exe, _, _) in &rows {
                                 let has = t.iter().any(|x| core::exe_matches(x, exe));
                                 if all && has {
                                     t.retain(|x| !core::exe_matches(x, exe));
@@ -453,16 +499,16 @@ impl eframe::App for BossKeyApp {
                 let head_y = rows_rect.top() + 16.0;
                 let painter = ui.painter();
                 painter.text(
-                    Pos2::new(rows_rect.left() + 62.0, head_y),
+                    Pos2::new(rows_rect.left() + 88.0, head_y),
                     Align2::LEFT_CENTER,
-                    "应用进程名称",
+                    "应用名称",
                     FontId::proportional(11.0),
                     c.text_mute,
                 );
                 painter.text(
-                    Pos2::new(rows_rect.left() + 280.0, head_y),
+                    Pos2::new(rows_rect.left() + 352.0, head_y),
                     Align2::LEFT_CENTER,
-                    "匹配窗口标题 / 描述",
+                    "进程名称",
                     FontId::proportional(11.0),
                     c.text_mute,
                 );
@@ -481,14 +527,15 @@ impl eframe::App for BossKeyApp {
                     Stroke::new(1.0, c.border_soft),
                 );
 
-                // 行（可滚动）
+                // 行（可滚动）：下移让出表头
+                ui.add_space(34.0);
                 let rows = self.filtered_rows();
                 let mut action: Option<String> = None;
                 egui::ScrollArea::vertical()
                     .id_salt("rows")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (exe, title) in &rows {
+                        for (exe, name, _title) in &rows {
                             ui.add_space(4.0);
                             let resp = ui.allocate_response(
                                 Vec2::new(rows_rect.width() - 24.0, ROW_H),
@@ -534,32 +581,43 @@ impl eframe::App for BossKeyApp {
                                 painter.rect_filled(cb, 5.0, c.bg);
                                 painter.rect_stroke(cb, 5.0, Stroke::new(1.0, c.border), egui::StrokeKind::Inside);
                             }
-                            let chip = Rect::from_min_size(
-                                Pos2::new(rect.left() + 52.0, cy - 11.0),
-                                Vec2::new(22.0, 22.0),
+                            // 应用图标（真实 exe 图标；缺省回落字母块）
+                            let icon_rect = Rect::from_min_size(
+                                Pos2::new(rect.left() + 52.0, cy - 12.0),
+                                Vec2::new(24.0, 24.0),
                             );
-                            painter.rect_filled(chip, 6.0, c.card);
-                            let letter: String =
-                                exe.chars().take(1).collect::<String>().to_uppercase();
+                            if let Some(tex) = self.icons.get(exe) {
+                                painter.image(
+                                    tex.id(),
+                                    icon_rect,
+                                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
+                            } else {
+                                painter.rect_filled(icon_rect, 6.0, c.card);
+                                let letter: String =
+                                    exe.chars().take(1).collect::<String>().to_uppercase();
+                                painter.text(
+                                    icon_rect.center(),
+                                    Align2::CENTER_CENTER,
+                                    letter,
+                                    FontId::monospace(11.0),
+                                    c.text_dim,
+                                );
+                            }
+                            // 应用名称 / 进程名称
                             painter.text(
-                                chip.center(),
-                                Align2::CENTER_CENTER,
-                                letter,
-                                FontId::monospace(11.0),
-                                c.text_dim,
-                            );
-                            painter.text(
-                                Pos2::new(rect.left() + 84.0, cy),
+                                Pos2::new(rect.left() + 88.0, cy),
                                 Align2::LEFT_CENTER,
-                                exe,
-                                FontId::monospace(13.0),
+                                ellipsize(name, 22),
+                                FontId::proportional(12.5),
                                 c.text,
                             );
                             painter.text(
-                                Pos2::new(rect.left() + 262.0, cy),
+                                Pos2::new(rect.left() + 352.0, cy),
                                 Align2::LEFT_CENTER,
-                                title,
-                                FontId::proportional(12.5),
+                                exe,
+                                FontId::monospace(12.5),
                                 c.text_dim,
                             );
                             let (label, fg, bg) = if hidden {
@@ -683,6 +741,16 @@ impl eframe::App for BossKeyApp {
 // ---------------- 小组件 ----------------
 
 /// 窗口按钮：矢量绘制（0=最小化 1=最大化 2=关闭），不依赖字形
+/// 按字符数截断并加省略号
+fn ellipsize(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
+}
+
 fn win_btn(ui: &mut egui::Ui, c: Palette, icon: u8) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(36.0, 30.0), Sense::click());
     let painter = ui.painter();

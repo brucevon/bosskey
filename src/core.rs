@@ -22,7 +22,7 @@ use windows::Win32::UI::Shell::{
     NOTIFY_ICON_STATE, NIS_HIDDEN, Shell_NotifyIconGetRect, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{GUID, PWSTR, w};
+use windows::core::{GUID, PCWSTR, PWSTR, w};
 
 // ---------------- 设置 ----------------
 
@@ -133,6 +133,162 @@ pub fn exe_name_of(pid: u32) -> Option<String> {
         } else {
             Some(name)
         }
+    }
+}
+
+/// 进程 PID -> exe 全路径
+pub fn full_path_of(pid: u32) -> Option<String> {
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 260];
+        let mut size = buf.len() as u32;
+        let fmt: PROCESS_NAME_FORMAT = PROCESS_NAME_FORMAT(0);
+        let ok = QueryFullProcessImageNameW(handle, fmt, PWSTR(buf.as_mut_ptr()), &mut size);
+        let _ = CloseHandle(handle);
+        ok.ok()?;
+        let path = String::from_utf16_lossy(&buf[..size as usize]);
+        if path.is_empty() {
+            None
+        } else {
+            Some(path)
+        }
+    }
+}
+
+/// 按 exe 名找运行中进程的全路径
+pub fn find_exe_path(exe: &str) -> Option<String> {
+    running_processes()
+        .into_iter()
+        .find(|(_, name)| exe_matches(exe, name))
+        .and_then(|(pid, _)| full_path_of(pid))
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// exe 版本资源 FileDescription（任务管理器「应用名称」同源）
+fn file_description(wpath: &[u16]) -> Option<String> {
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
+    unsafe {
+        let mut dummy = 0u32;
+        let size = GetFileVersionInfoSizeW(PCWSTR(wpath.as_ptr()), Some(&mut dummy));
+        if size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; size as usize];
+        if GetFileVersionInfoW(PCWSTR(wpath.as_ptr()), Some(0), size, buf.as_mut_ptr() as *mut c_void).is_err() {
+            return None;
+        }
+        let mut tp: *mut c_void = std::ptr::null_mut();
+        let mut tl = 0u32;
+        let tkey = wide(r"\VarFileInfo\Translation");
+        if !VerQueryValueW(buf.as_ptr() as *const c_void, PCWSTR(tkey.as_ptr()), &mut tp, &mut tl).as_bool()
+            || tp.is_null()
+        {
+            return None;
+        }
+        let pairs = std::slice::from_raw_parts(tp as *const u16, (tl as usize / 2) as usize);
+        for chunk in pairs.chunks_exact(2) {
+            let key = wide(&format!(
+                r"\StringFileInfo\{:04x}{:04x}\FileDescription",
+                chunk[0], chunk[1]
+            ));
+            let mut fp: *mut c_void = std::ptr::null_mut();
+            let mut fl = 0u32;
+            if VerQueryValueW(buf.as_ptr() as *const c_void, PCWSTR(key.as_ptr()), &mut fp, &mut fl)
+                .as_bool()
+                && fl > 1
+                && !fp.is_null()
+            {
+                let s = std::slice::from_raw_parts(fp as *const u16, fl.saturating_sub(1) as usize);
+                let name = String::from_utf16_lossy(s);
+                if !name.trim().is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Shell 展示名（资源管理器同款友好名）+ 应用图标 RGBA（SHGetFileInfoW）
+pub fn exe_shell_info(exe: &str) -> (Option<String>, Option<Vec<u8>>) {
+    use windows::Win32::Graphics::Gdi as g;
+    use windows::Win32::UI::Shell::{SHGFI_ICON, SHGFI_LARGEICON, SHFILEINFOW, SHGetFileInfoW};
+    use windows::Win32::UI::WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx};
+    use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+
+    let path = match find_exe_path(exe) {
+        Some(p) => p,
+        None => return (None, None),
+    };
+    let wpath: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let name = file_description(&wpath);
+
+        let mut shfi2 = SHFILEINFOW::default();
+        let _ = SHGetFileInfoW(
+            PCWSTR(wpath.as_ptr()),
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            Some(&mut shfi2),
+            size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_LARGEICON,
+        );
+        let hicon = shfi2.hIcon;
+        if hicon.is_invalid() {
+            return (name, None);
+        }
+        let hdc = g::GetDC(None);
+        if hdc.is_invalid() {
+            let _ = DestroyIcon(hicon);
+            return (name, None);
+        }
+        let mem = g::CreateCompatibleDC(Some(hdc));
+        let mut bits: *mut c_void = std::ptr::null_mut();
+        let bmi = g::BITMAPINFO {
+            bmiHeader: g::BITMAPINFOHEADER {
+                biSize: size_of::<g::BITMAPINFOHEADER>() as u32,
+                biWidth: 32,
+                biHeight: -32,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut rgba = None;
+        if let Ok(hbmp) = g::CreateDIBSection(Some(hdc), &bmi, g::DIB_RGB_COLORS, &mut bits, None, 0) {
+            let old = g::SelectObject(mem, g::HGDIOBJ(hbmp.0));
+            let _ = DrawIconEx(mem, 0, 0, hicon, 32, 32, 0, None, DI_NORMAL);
+            if !bits.is_null() {
+                let mut out = vec![0u8; 32 * 32 * 4];
+                let src = std::slice::from_raw_parts(bits as *const u8, 32 * 32 * 4);
+                let mut alpha_sum = 0u32;
+                for i in 0..32 * 32 {
+                    out[i * 4] = src[i * 4 + 2];
+                    out[i * 4 + 1] = src[i * 4 + 1];
+                    out[i * 4 + 2] = src[i * 4];
+                    out[i * 4 + 3] = src[i * 4 + 3];
+                    alpha_sum += src[i * 4 + 3] as u32;
+                }
+                if alpha_sum == 0 {
+                    for px in out.chunks_exact_mut(4) {
+                        px[3] = 255;
+                    }
+                }
+                rgba = Some(out);
+            }
+            let _ = g::SelectObject(mem, old);
+            let _ = g::DeleteObject(g::HGDIOBJ(hbmp.0));
+        }
+        let _ = g::DeleteDC(mem);
+        let _ = g::ReleaseDC(None, hdc);
+        let _ = DestroyIcon(hicon);
+        (name, rgba)
     }
 }
 
