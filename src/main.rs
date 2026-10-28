@@ -29,7 +29,12 @@ fn main() -> eframe::Result {
             .with_inner_size([1080.0, 720.0])
             .with_min_inner_size([860.0, 560.0])
             .with_decorations(false)
-            .with_title("BossKey"),
+            .with_title("BossKey")
+            .with_icon(egui::IconData {
+                rgba: include_bytes!("../assets/bosskey-256.rgba").to_vec(),
+                width: 256,
+                height: 256,
+            }),
         ..Default::default()
     };
 

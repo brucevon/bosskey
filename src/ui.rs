@@ -120,6 +120,7 @@ pub struct BossKeyApp {
     last_scan: Instant,
     maxed: bool,
     theme_light: bool,
+    logo: Option<egui::TextureHandle>,
 }
 
 impl BossKeyApp {
@@ -135,6 +136,7 @@ impl BossKeyApp {
             last_scan: Instant::now() - Duration::from_secs(10),
             maxed: false,
             theme_light: true,
+            logo: None,
         };
         app.rescan();
         app
@@ -240,6 +242,13 @@ impl eframe::App for BossKeyApp {
         let ctx = ui.ctx().clone();
         let win = frame.winit_window().cloned();
         let c = Self::palette(self.theme_light);
+        if self.logo.is_none() {
+            let img = egui::ColorImage::from_rgba_unmultiplied(
+                [64, 64],
+                include_bytes!("../assets/bosskey-64.rgba"),
+            );
+            self.logo = Some(ctx.load_texture("bosskey-logo", img, Default::default()));
+        }
         ctx.set_visuals(if self.theme_light {
             egui::Visuals::light()
         } else {
@@ -260,16 +269,12 @@ impl eframe::App for BossKeyApp {
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add_space(14.0);
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(28.0, 28.0), Sense::hover());
-                    let painter = ui.painter();
-                    painter.rect_filled(rect, 7.0, c.indigo);
-                    painter.text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
-                        "B",
-                        FontId::proportional(15.0),
-                        Color32::WHITE,
-                    );
+                    if let Some(tex) = &self.logo {
+                        ui.add(
+                            egui::Image::new((tex.id(), Vec2::new(30.0, 30.0)))
+                                .fit_to_exact_size(Vec2::new(30.0, 30.0)),
+                        );
+                    }
                     ui.add_space(8.0);
                     ui.label(RichText::new("BossKey").size(15.0).strong().color(c.text));
                     ui.add_space(6.0);
