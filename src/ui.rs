@@ -116,7 +116,8 @@ pub struct BossKeyApp {
     rows: Vec<Row>,
     search: String,
     toast: Option<(String, Instant)>,
-    settings_open: bool,
+    page: u8, // 0=列表 1=设置
+    confirm_exit: bool,
     self_visible: bool,
     last_scan: Instant,
     maxed: bool,
@@ -137,7 +138,8 @@ impl BossKeyApp {
             rows: Vec::new(),
             search: String::new(),
             toast: None,
-            settings_open: false,
+            page: 0,
+            confirm_exit: false,
             self_visible: true,
             last_scan: Instant::now() - Duration::from_secs(10),
             maxed: false,
@@ -262,7 +264,7 @@ impl eframe::App for BossKeyApp {
                 Evt::OpenSettings => {
                     self.self_visible = true;
                     core::set_self_visible(true);
-                    self.settings_open = true;
+                    self.page = 1;
                 }
                 Evt::Exit => {
                     self.engine.do_exit();
@@ -394,60 +396,46 @@ impl eframe::App for BossKeyApp {
                 });
             });
 
-        // ================= 快捷键栏 =================
-        egui::Panel::top("hotkeys")
-            .exact_size(52.0)
-            .frame(egui::Frame::NONE.fill(c.panel))
+        // ================= 菜单栏（标题下方）=================
+        egui::Panel::top("menubar")
+            .exact_size(34.0)
+            .frame(egui::Frame::NONE.fill(c.bg_header))
             .show(ui, |ui| {
-                ui.add_space(13.0);
+                ui.add_space(5.0);
                 ui.horizontal(|ui| {
-                    ui.add_space(20.0);
-                    label_chip(ui, c, "一键隐藏目标:", "Ctrl + Alt + H", true);
                     ui.add_space(16.0);
-                    label_chip(ui, c, "本体验隐:", "Ctrl + Alt + B", false);
-                    ui.add_space(16.0);
-                    ui.label(
-                        RichText::new("关闭窗口即退居系统托盘")
-                            .size(11.0)
-                            .color(c.text_mute),
-                    );
+                    if menu_item(ui, c, "设置") {
+                        self.page = 1;
+                    }
                 });
             });
 
-        // ================= 底栏 =================
+        // ================= 底栏（左：快捷键提示；右：动作按钮）=================
         egui::Panel::bottom("footer")
             .exact_size(76.0)
             .frame(egui::Frame::NONE.fill(c.bg_header))
             .show(ui, |ui| {
-                ui.add_space(14.0);
+                ui.add_space(15.0);
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
-                    if chip_button(ui, "参数设置", c.card, c.border, c.border, c.text_dim, 108.0) {
-                        self.settings_open = true;
-                    }
-                    ui.add_space(10.0);
-                    if chip_button(ui, "恢复并彻底退出", c.rose_bg, c.rose_bg, c.rose_bd, c.rose, 160.0) {
-                        self.engine.do_exit();
-                        self.exiting = true;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
+                    label_chip(ui, c, "一键隐藏目标:", "Ctrl + Alt + H", true);
+                    ui.add_space(16.0);
+                    label_chip(ui, c, "BossKey显隐:", "Ctrl + Alt + B", false);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(20.0);
+                        if chip_button(ui, "退出BossKey", c.rose_bg, c.rose_bg, c.rose_bd, c.rose, 108.0)
+                        {
+                            self.confirm_exit = true;
+                        }
+                        ui.add_space(10.0);
                         if chip_button(ui, "恢复选中", c.indigo, c.indigo, c.indigo, Color32::WHITE, 96.0)
                         {
                             let msg = self.engine.do_show();
                             self.toast(&msg);
                         }
                         ui.add_space(10.0);
-                        if chip_button(
-                            ui,
-                            "隐藏选中",
-                            c.amber_dk,
-                            c.amber,
-                            c.amber,
-                            Color32::WHITE,
-                            96.0,
-                        ) {
+                        if chip_button(ui, "隐藏选中", c.amber_dk, c.amber, c.amber, Color32::WHITE, 96.0)
+                        {
                             let msg = self.engine.do_hide();
                             self.toast(&msg);
                         }
@@ -459,6 +447,7 @@ impl eframe::App for BossKeyApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(c.bg))
             .show(ui, |ui| {
+                if self.page == 0 {
                 ui.add_space(14.0);
                 // 工具栏
                 ui.horizontal(|ui| {
@@ -664,56 +653,103 @@ impl eframe::App for BossKeyApp {
                 if let Some(exe) = action {
                     self.toggle_target(&exe);
                 }
-            });
-
-        // ================= 设置弹窗 =================
-        if self.settings_open {
-            let mut open = self.settings_open;
-            egui::Window::new(RichText::new("BossKey 快捷键及高级首选项").size(13.0))
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ui, |ui| {
+                } else {
+                    // ================= 设置页（新页面，非弹窗）=================
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        if chip_button(ui, "← 返回", c.card, c.border, c.border, c.text_dim, 84.0) {
+                            self.page = 0;
+                        }
+                    });
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        ui.label(RichText::new("设置").size(16.0).strong().color(c.text));
+                    });
+                    ui.add_space(16.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        ui.label(RichText::new("快捷键").size(11.0).color(c.text_mute));
+                    });
                     ui.add_space(6.0);
-                    ui.label(RichText::new("全局隐藏目标热键").size(11.0).color(c.text_dim));
-                    ui.add_space(2.0);
-                    kbd_chip(ui, c, "Ctrl + Alt + H", true);
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("本体呼出/隐藏热键").size(11.0).color(c.text_dim));
-                    ui.add_space(2.0);
-                    kbd_chip(ui, c, "Ctrl + Alt + B", false);
-                    ui.add_space(12.0);
-                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        label_chip(ui, c, "一键隐藏目标:", "Ctrl + Alt + H", true);
+                        ui.add_space(16.0);
+                        label_chip(ui, c, "BossKey显隐:", "Ctrl + Alt + B", false);
+                    });
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        ui.label(RichText::new("行为").size(11.0).color(c.text_mute));
+                    });
                     ui.add_space(6.0);
                     let mut s = self.engine.settings;
                     let mut changed = false;
-                    if ui
-                        .checkbox(
-                            &mut s.restore_targets_on_start,
-                            "启动时恢复上次勾选的目标",
-                        )
-                        .changed()
-                    {
-                        changed = true;
-                    }
-                    if ui
-                        .checkbox(&mut s.restore_on_exit, "退出时恢复被隐藏的目标")
-                        .changed()
-                    {
-                        changed = true;
-                    }
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        if ui
+                            .checkbox(&mut s.restore_targets_on_start, "启动时恢复上次勾选的目标")
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        if ui
+                            .checkbox(&mut s.restore_on_exit, "退出时恢复被隐藏的目标")
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    });
                     if changed {
                         self.engine.set_settings(s);
                     }
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        ui.label(
+                            RichText::new("改动即时生效并保存 · 热键暂不支持自定义")
+                                .size(10.0)
+                                .color(c.text_mute),
+                        );
+                    });
+                }
+            });
+
+        // ================= 退出确认弹窗（主题风格）=================
+        if self.confirm_exit {
+            egui::Window::new(RichText::new("退出 BossKey").size(13.0).strong().color(c.text))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+                .frame(egui::Frame::NONE.fill(c.bg_header))
+                .show(ui, |ui| {
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new("热键暂不支持自定义 · 改动即时生效并保存")
-                            .size(10.0)
-                            .color(c.text_mute),
+                        RichText::new("退出后将恢复被隐藏的软件，确认退出？")
+                            .size(12.0)
+                            .color(c.text_dim),
                     );
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if chip_button(ui, "取消", c.card, c.border, c.border, c.text_dim, 80.0) {
+                                self.confirm_exit = false;
+                            }
+                            ui.add_space(10.0);
+                            if chip_button(ui, "确认退出", c.rose_bg, c.rose_bg, c.rose_bd, c.rose, 96.0)
+                            {
+                                self.engine.do_exit();
+                                self.exiting = true;
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        });
+                    });
                 });
-            self.settings_open = open;
         }
 
         // ================= Toast =================
@@ -857,6 +893,23 @@ fn paint_kbd(painter: &egui::Painter, c: Palette, rect: Rect, text: &str, accent
         FontId::monospace(11.0),
         if accent { c.kbd_accent } else { c.text_dim },
     );
+}
+
+/// 菜单项（标题下方一行）
+fn menu_item(ui: &mut egui::Ui, c: Palette, text: &str) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(56.0, 24.0), Sense::click());
+    let painter = ui.painter();
+    if resp.hovered() {
+        painter.rect_filled(rect, 4.0, c.card);
+    }
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        text,
+        FontId::proportional(12.5),
+        c.text,
+    );
+    resp.clicked()
 }
 
 fn kbd_chip(ui: &mut egui::Ui, c: Palette, text: &str, accent: bool) {
