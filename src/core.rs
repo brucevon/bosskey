@@ -107,6 +107,43 @@ pub fn exe_matches(target: &str, exe: &str) -> bool {
     norm(target) == norm(exe)
 }
 
+/// 真实应用窗口判定（任务管理器逻辑）：矩形 >=50x50 且与屏幕相交，
+/// 排除后台进程的 0x0 / 离屏幽灵「可见」窗口
+fn has_real_window(hwnd: HWND) -> bool {
+    unsafe {
+        // 任务栏按钮判定（任务管理器「应用」逻辑）：
+        // 无属主窗口 或 显式 WS_EX_APPWINDOW；被拥有窗口无任务栏按钮，属后台
+        let owner = GetWindow(hwnd, GW_OWNER).unwrap_or_default();
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if !owner.0.is_null() && (ex & WS_EX_APPWINDOW.0 as isize) == 0 {
+            return false;
+        }
+        // DWM 遮蔽窗口（输入法覆盖层/UWP 后台等）对用户不可见——任务管理器同款排除
+        let mut cloaked = 0u32;
+        if windows::Win32::Graphics::Dwm::DwmGetWindowAttribute(
+            hwnd,
+            windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(14), // DWMWA_CLOAKED
+            &mut cloaked as *mut u32 as *mut c_void,
+            size_of::<u32>() as u32,
+        )
+        .is_ok()
+            && cloaked != 0
+        {
+            return false;
+        }
+        let mut rc = RECT::default();
+        if GetWindowRect(hwnd, &mut rc).is_err() {
+            return false;
+        }
+        if rc.right - rc.left < 50 || rc.bottom - rc.top < 50 {
+            return false;
+        }
+        let sx = GetSystemMetrics(SM_CXSCREEN);
+        let sy = GetSystemMetrics(SM_CYSCREEN);
+        rc.right > 0 && rc.bottom > 0 && rc.left < sx && rc.top < sy
+    }
+}
+
 /// 是否是 bosskey 自身进程（从列表与隐藏目标中排除）
 pub fn is_self(exe: &str) -> bool {
     std::env::current_exe()
@@ -182,31 +219,41 @@ fn file_description(wpath: &[u16]) -> Option<String> {
         if GetFileVersionInfoW(PCWSTR(wpath.as_ptr()), Some(0), size, buf.as_mut_ptr() as *mut c_void).is_err() {
             return None;
         }
-        let mut tp: *mut c_void = std::ptr::null_mut();
-        let mut tl = 0u32;
-        let tkey = wide(r"\VarFileInfo\Translation");
-        if !VerQueryValueW(buf.as_ptr() as *const c_void, PCWSTR(tkey.as_ptr()), &mut tp, &mut tl).as_bool()
-            || tp.is_null()
-        {
-            return None;
-        }
-        let pairs = std::slice::from_raw_parts(tp as *const u16, (tl as usize / 2) as usize);
-        for chunk in pairs.chunks_exact(2) {
-            let key = wide(&format!(
-                r"\StringFileInfo\{:04x}{:04x}\FileDescription",
-                chunk[0], chunk[1]
-            ));
-            let mut fp: *mut c_void = std::ptr::null_mut();
-            let mut fl = 0u32;
-            if VerQueryValueW(buf.as_ptr() as *const c_void, PCWSTR(key.as_ptr()), &mut fp, &mut fl)
+        // 语言对（缺失时用常见代码页兜底）
+        let mut pairs_buf: Vec<u16> = Vec::new();
+        unsafe {
+            let mut tp: *mut c_void = std::ptr::null_mut();
+            let mut tl = 0u32;
+            let tkey = wide(r"\VarFileInfo\Translation");
+            if VerQueryValueW(buf.as_ptr() as *const c_void, PCWSTR(tkey.as_ptr()), &mut tp, &mut tl)
                 .as_bool()
-                && fl > 1
-                && !fp.is_null()
+                && !tp.is_null()
             {
-                let s = std::slice::from_raw_parts(fp as *const u16, fl.saturating_sub(1) as usize);
-                let name = String::from_utf16_lossy(s);
-                if !name.trim().is_empty() {
-                    return Some(name);
+                pairs_buf = std::slice::from_raw_parts(tp as *const u16, tl as usize / 2).to_vec();
+            }
+        }
+        if pairs_buf.is_empty() {
+            pairs_buf = vec![0x0409, 0x04B0, 0x0409, 0x04E4, 0x0804, 0x04B0, 0x0000, 0x04B0];
+        }
+        // FileDescription -> ProductName -> None（调用方回落 exe 名，对齐任务管理器）
+        for field in [r"\FileDescription", r"\ProductName"] {
+            for chunk in pairs_buf.chunks_exact(2) {
+                let key = wide(&format!(
+                    r"\StringFileInfo\{:04x}{:04x}{}",
+                    chunk[0], chunk[1], field
+                ));
+                let mut fp: *mut c_void = std::ptr::null_mut();
+                let mut fl = 0u32;
+                if VerQueryValueW(buf.as_ptr() as *const c_void, PCWSTR(key.as_ptr()), &mut fp, &mut fl)
+                    .as_bool()
+                    && fl > 1
+                    && !fp.is_null()
+                {
+                    let s = std::slice::from_raw_parts(fp as *const u16, fl.saturating_sub(1) as usize);
+                    let name = String::from_utf16_lossy(s);
+                    if !name.trim().is_empty() {
+                        return Some(name);
+                    }
                 }
             }
         }
@@ -478,8 +525,11 @@ pub fn parse_guid(s: &str) -> Option<GUID> {
 }
 
 /// 托盘图标属主进程（无可见窗口、仅托盘图标的应用）
-/// NotifyIconSettings 是历史记录——必须逐个探测图标当前存活（Shell_NotifyIconGetRect），
-/// 否则纯后台进程（曾注册过图标但已注销）会混入列表
+///
+/// 过滤：
+/// 1. NotifyIconSettings 是历史记录 → 探测图标当前存活（Shell_NotifyIconGetRect）
+///    注：Windows 无「图标可见性」API——GetRect 对所有图标（含可见）返回同一
+///    占位矩形，故与 Windows 设置「其他系统托盘图标」同语义：存活即算托盘应用
 pub fn tray_apps() -> Vec<String> {
     let procs = running_processes();
     let mut exes: Vec<String> = Vec::new();
@@ -645,6 +695,9 @@ pub fn collect_visible_windows(targets: &[String]) -> Vec<HWND> {
             return TRUE;
         }
         if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW.0 as isize != 0 {
+            return TRUE;
+        }
+        if !has_real_window(hwnd) {
             return TRUE;
         }
         let mut pid = 0u32;
@@ -832,6 +885,9 @@ impl Engine {
                 return TRUE;
             }
             if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW.0 as isize != 0 {
+                return TRUE;
+            }
+            if !has_real_window(hwnd) {
                 return TRUE;
             }
             let mut pid = 0u32;

@@ -126,6 +126,7 @@ pub struct BossKeyApp {
     names: std::collections::HashMap<String, String>,
     icons: std::collections::HashMap<String, egui::TextureHandle>,
     pending_icons: std::collections::HashMap<String, Vec<u8>>,
+    procs: Vec<(u32, String)>,
 }
 
 impl BossKeyApp {
@@ -146,12 +147,14 @@ impl BossKeyApp {
             names: std::collections::HashMap::new(),
             icons: std::collections::HashMap::new(),
             pending_icons: std::collections::HashMap::new(),
+            procs: Vec::new(),
         };
         app.rescan();
         app
     }
 
     fn rescan(&mut self) {
+        self.procs = core::running_processes();
         let apps = self.engine.scan_apps();
         let mut rows = Vec::with_capacity(apps.len());
         for (exe, title) in apps {
@@ -164,17 +167,16 @@ impl BossKeyApp {
                     self.pending_icons.insert(exe.clone(), rgba);
                 }
             }
-            let name = self
-                .names
-                .get(&exe)
-                .cloned()
-                .unwrap_or_else(|| {
-                    if title.is_empty() {
-                        exe.clone()
-                    } else {
-                        title.clone()
-                    }
-                });
+            let mut name = self.names.get(&exe).cloned().unwrap_or_else(|| exe.clone());
+            // 任务管理器样式：同名进程 >1 时聚合显示「名称 (N)」
+            let n = self
+                .procs
+                .iter()
+                .filter(|(_, nm)| core::exe_matches(&exe, nm))
+                .count();
+            if n > 1 {
+                name = format!("{name} ({n})");
+            }
             rows.push(Row { exe, name, title });
         }
         self.rows = rows;
@@ -527,10 +529,14 @@ impl eframe::App for BossKeyApp {
                     Stroke::new(1.0, c.border_soft),
                 );
 
-                // 行（可滚动）：下移让出表头
-                ui.add_space(34.0);
+                // 行区：严格约束在圆角面板内（左侧/底部不溢出）
+                let body = Rect::from_min_max(
+                    Pos2::new(rows_rect.left() + 1.0, rows_rect.top() + 34.0),
+                    Pos2::new(rows_rect.right() - 1.0, rows_rect.bottom() - 1.0),
+                );
                 let rows = self.filtered_rows();
                 let mut action: Option<String> = None;
+                ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("rows")
                     .auto_shrink([false, false])
@@ -538,7 +544,7 @@ impl eframe::App for BossKeyApp {
                         for (exe, name, _title) in &rows {
                             ui.add_space(4.0);
                             let resp = ui.allocate_response(
-                                Vec2::new(rows_rect.width() - 24.0, ROW_H),
+                                Vec2::new(body.width() - 8.0, ROW_H),
                                 Sense::click(),
                             );
                             let rect = resp.rect;
@@ -643,6 +649,7 @@ impl eframe::App for BossKeyApp {
                             }
                         }
                     });
+                });
 
                 if let Some(exe) = action {
                     self.toggle_target(&exe);
