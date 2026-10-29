@@ -452,10 +452,7 @@ impl eframe::App for BossKeyApp {
                 // 工具栏
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
-                    let te = egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("搜索进程名或窗口标题...")
-                        .desired_width(380.0);
-                    ui.add(te);
+                    search_field(ui, c, &mut self.search, 380.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(20.0);
                         if chip_button(ui, "刷新进程", c.card, c.border, c.border, c.text_dim, 110.0) {
@@ -986,21 +983,90 @@ fn paint_kbd(painter: &egui::Painter, c: Palette, rect: Rect, text: &str, accent
     );
 }
 
-/// 菜单项（标题下方一行）
+/// 菜单项（标题下方一行）：滑杆图标 + 文字，圆角描边胶囊（与整体按钮同语言）
 fn menu_item(ui: &mut egui::Ui, c: Palette, text: &str) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(56.0, 24.0), Sense::click());
-    let painter = ui.painter();
-    if resp.hovered() {
-        painter.rect_filled(rect, 4.0, c.card);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(76.0, 26.0), Sense::click());
+    let p = ui.painter();
+    let hovered = resp.hovered();
+    let fg = if hovered { c.text } else { c.text_dim };
+    p.rect_filled(rect, 8.0, if hovered { c.hot_bg } else { c.panel });
+    p.rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(1.0, if hovered { c.border } else { c.border_soft }),
+        egui::StrokeKind::Inside,
+    );
+    // 滑杆图标：三条横线 + 错位旋钮
+    let st = Stroke::new(1.2, fg);
+    let x0 = rect.left() + 11.0;
+    let x1 = x0 + 12.0;
+    let ly = rect.center().y;
+    for (dy, kx) in [(ly - 5.0, x0 + 7.0), (ly, x0 + 3.0), (ly + 5.0, x0 + 8.5)] {
+        p.line_segment([Pos2::new(x0, dy), Pos2::new(x1, dy)], st);
+        p.circle_filled(Pos2::new(kx, dy), 1.9, fg);
     }
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
+    p.text(
+        Pos2::new(rect.left() + 30.0, ly),
+        Align2::LEFT_CENTER,
         text,
-        FontId::proportional(12.5),
-        c.text,
+        FontId::proportional(12.0),
+        fg,
     );
     resp.clicked()
+}
+
+/// 自绘搜索框：圆角面板底 + 细描边 + 放大镜；聚焦时描边转靛紫
+fn search_field(ui: &mut egui::Ui, c: Palette, text: &mut String, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 36.0), Sense::hover());
+    let box_id = ui.id().with("search_box");
+    let hit = ui.interact(rect, box_id.with("hit"), Sense::click());
+
+    ui.painter().rect_filled(rect, 8.0, c.panel);
+    ui.painter().rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(1.0, c.border_soft),
+        egui::StrokeKind::Inside,
+    );
+
+    // 输入区：左侧留出放大镜位
+    let text_rect = Rect::from_min_size(
+        Pos2::new(rect.left() + 32.0, rect.top() + 8.0),
+        Vec2::new(width - 32.0 - 12.0, 20.0),
+    );
+    let edit = ui.put(
+        text_rect,
+        egui::TextEdit::singleline(text)
+            .id(box_id.with("edit"))
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .desired_width(text_rect.width())
+            .font(FontId::proportional(12.5))
+            .text_color(c.text)
+            .horizontal_align(egui::Align::LEFT)
+            .vertical_align(egui::Align::Center)
+            .hint_text("搜索进程名或窗口标题..."),
+    );
+    if hit.clicked() && !edit.has_focus() {
+        edit.request_focus();
+    }
+
+    // 放大镜 + 聚焦描边
+    let p = ui.painter();
+    let focused = edit.has_focus();
+    let col = if focused { c.indigo } else { c.text_mute };
+    let ctr = Pos2::new(rect.left() + 18.0, rect.center().y - 1.0);
+    p.circle_stroke(ctr, 5.0, Stroke::new(1.2, col));
+    p.line_segment(
+        [
+            Pos2::new(ctr.x + 3.6, ctr.y + 3.6),
+            Pos2::new(ctr.x + 7.0, ctr.y + 7.0),
+        ],
+        Stroke::new(1.2, col),
+    );
+    if focused {
+        p.rect_stroke(rect, 8.0, Stroke::new(1.0, c.indigo), egui::StrokeKind::Inside);
+    }
 }
 
 fn kbd_chip(ui: &mut egui::Ui, c: Palette, text: &str, accent: bool) {
