@@ -720,36 +720,127 @@ impl eframe::App for BossKeyApp {
                 }
             });
 
-        // ================= 退出确认弹窗（主题风格）=================
+        // ================= 退出确认弹窗（自绘卡片，与整体风格一致）=================
         if self.confirm_exit {
-            egui::Window::new(RichText::new("退出 BossKey").size(13.0).strong().color(c.text))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-                .frame(egui::Frame::NONE.fill(c.bg_header))
-                .show(ui, |ui| {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("退出后将恢复被隐藏的软件，确认退出？")
-                            .size(12.0)
-                            .color(c.text_dim),
+            let screen = ui.max_rect();
+            // 背景压暗：浅色主题略淡，深色主题更深
+            let dim = if self.theme_light {
+                Color32::from_rgba_unmultiplied(15, 23, 42, 110)
+            } else {
+                Color32::from_black_alpha(170)
+            };
+            egui::Area::new(egui::Id::new("exit_modal"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(screen.min)
+                .interactable(true)
+                .show(ui.ctx(), |ui| {
+                    // 遮罩同时吞掉下层点击
+                    ui.allocate_rect(screen, Sense::click());
+                    ui.painter().rect_filled(screen, 0.0, dim);
+
+                    let card = Rect::from_center_size(screen.center(), Vec2::new(404.0, 206.0));
+                    let p = ui.painter().clone();
+                    // 投影 + 卡片
+                    p.rect_filled(
+                        card.translate(Vec2::new(0.0, 12.0)),
+                        16.0,
+                        Color32::from_black_alpha(if self.theme_light { 40 } else { 80 }),
                     );
-                    ui.add_space(14.0);
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if chip_button(ui, "取消", c.card, c.border, c.border, c.text_dim, 80.0) {
-                                self.confirm_exit = false;
-                            }
-                            ui.add_space(10.0);
-                            if chip_button(ui, "确认退出", c.rose_bg, c.rose_bg, c.rose_bd, c.rose, 96.0)
-                            {
-                                self.engine.do_exit();
-                                self.exiting = true;
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                            }
-                        });
-                    });
+                    p.rect_filled(card, 16.0, c.panel);
+                    p.rect_stroke(
+                        card,
+                        16.0,
+                        Stroke::new(1.0, c.border),
+                        egui::StrokeKind::Inside,
+                    );
+
+                    // 警示图标
+                    let ic = Pos2::new(card.left() + 42.0, card.top() + 44.0);
+                    p.circle_filled(ic, 18.0, c.rose_bg);
+                    p.circle_stroke(ic, 18.0, Stroke::new(1.0, c.rose_bd));
+                    p.text(ic, Align2::CENTER_CENTER, "!", FontId::proportional(19.0), c.rose);
+
+                    // 标题 / 说明（左对齐，与警示图标同轴）
+                    let title = p.layout_no_wrap(
+                        "退出 BossKey".to_string(),
+                        FontId::proportional(15.0),
+                        c.text,
+                    );
+                    p.galley(Pos2::new(card.left() + 74.0, card.top() + 33.0), title, c.text);
+                    let msg = p.layout_no_wrap(
+                        "退出后将恢复被隐藏的软件窗口与托盘图标。".to_string(),
+                        FontId::proportional(12.5),
+                        c.text_dim,
+                    );
+                    p.galley(Pos2::new(card.left() + 74.0, card.top() + 64.0), msg, c.text_dim);
+
+                    // 分隔线
+                    let dy = card.bottom() - 72.0;
+                    p.line_segment(
+                        [
+                            Pos2::new(card.left() + 24.0, dy),
+                            Pos2::new(card.right() - 24.0, dy),
+                        ],
+                        Stroke::new(1.0, c.border_soft),
+                    );
+
+                    // 按钮：右对齐，取消在左、确认在右
+                    let confirm = Rect::from_min_size(
+                        Pos2::new(card.right() - 24.0 - 104.0, card.bottom() - 60.0),
+                        Vec2::new(104.0, 36.0),
+                    );
+                    let cancel = Rect::from_min_size(
+                        Pos2::new(confirm.left() - 12.0 - 88.0, confirm.top()),
+                        Vec2::new(88.0, 36.0),
+                    );
+                    let cresp = ui.interact(cancel, egui::Id::new("exit_cancel"), Sense::click());
+                    let okresp = ui.interact(confirm, egui::Id::new("exit_confirm"), Sense::click());
+
+                    // 取消按钮
+                    let (cbg, cbd, cfg) = if cresp.hovered() {
+                        (c.hot_bg, c.border, c.text)
+                    } else {
+                        (c.card, c.border, c.text_dim)
+                    };
+                    p.rect_filled(cancel, 8.0, cbg);
+                    p.rect_stroke(cancel, 8.0, Stroke::new(1.0, cbd), egui::StrokeKind::Inside);
+                    p.text(
+                        cancel.center(),
+                        Align2::CENTER_CENTER,
+                        "取消",
+                        FontId::proportional(12.0),
+                        cfg,
+                    );
+
+                    // 确认按钮
+                    let (obg, obd, ofg) = if okresp.hovered() {
+                        (c.rose, c.rose, Color32::WHITE)
+                    } else {
+                        (c.rose_bg, c.rose_bd, c.rose)
+                    };
+                    p.rect_filled(confirm, 8.0, obg);
+                    p.rect_stroke(confirm, 8.0, Stroke::new(1.0, obd), egui::StrokeKind::Inside);
+                    p.text(
+                        confirm.center(),
+                        Align2::CENTER_CENTER,
+                        "确认退出",
+                        FontId::proportional(12.0),
+                        ofg,
+                    );
+
+                    if cresp.clicked() {
+                        self.confirm_exit = false;
+                    }
+                    if okresp.clicked() {
+                        self.engine.do_exit();
+                        self.exiting = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
                 });
+            // Esc 取消
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.confirm_exit = false;
+            }
         }
 
         // ================= Toast =================
