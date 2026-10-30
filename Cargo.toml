@@ -1,6 +1,6 @@
 [package]
 name = "bosskey"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2021"
 description = "Windows 老板键：一键隐藏/显示指定程序的窗口与托盘图标"
 license = "GPL-3.0-only"
@@ -23,6 +23,7 @@ windows = { version = "0.61", features = [
     "Win32_System_Registry",
     "Win32_Storage_FileSystem",
 ] }
+winit = { version = "0.30", default-features = false }
 
 [build-dependencies]
 winres = "0.1"

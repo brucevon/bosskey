@@ -26,8 +26,9 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1080.0, 720.0])
+            .with_inner_size([860.0, 560.0])
             .with_min_inner_size([860.0, 560.0])
+            .with_resizable(true)
             .with_decorations(false)
             .with_title("BossKey")
             .with_icon(egui::IconData {

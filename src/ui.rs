@@ -283,6 +283,62 @@ impl BossKeyApp {
         });
     }
 
+    /// 无边框窗口：贴近边缘 5px 时显示缩放光标，按下即以对应方向拖拽缩放
+    fn drag_resize(
+        &self,
+        ctx: &egui::Context,
+        win: Option<&winit::window::Window>,
+        screen: Rect,
+    ) {
+        use winit::window::ResizeDirection;
+        let Some(win) = win else { return };
+        if self.maxed {
+            return;
+        }
+        let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) else {
+            return;
+        };
+        let r = screen;
+        const M: f32 = 5.0;
+        let (right, bottom, left, top) = (
+            pos.x > r.right() - M,
+            pos.y > r.bottom() - M,
+            pos.x < r.left() + M,
+            pos.y < r.top() + M,
+        );
+        let dir = if right && bottom {
+            ResizeDirection::SouthEast
+        } else if left && bottom {
+            ResizeDirection::SouthWest
+        } else if right && top {
+            ResizeDirection::NorthEast
+        } else if left && top {
+            ResizeDirection::NorthWest
+        } else if right {
+            ResizeDirection::East
+        } else if left {
+            ResizeDirection::West
+        } else if bottom {
+            ResizeDirection::South
+        } else if top {
+            ResizeDirection::North
+        } else {
+            return;
+        };
+        ctx.set_cursor_icon(match dir {
+            ResizeDirection::East | ResizeDirection::West => egui::CursorIcon::ResizeHorizontal,
+            ResizeDirection::North | ResizeDirection::South => egui::CursorIcon::ResizeVertical,
+            ResizeDirection::NorthEast => egui::CursorIcon::ResizeNorthEast,
+            ResizeDirection::NorthWest => egui::CursorIcon::ResizeNorthWest,
+            ResizeDirection::SouthEast => egui::CursorIcon::ResizeSouthEast,
+            ResizeDirection::SouthWest => egui::CursorIcon::ResizeSouthWest,
+            _ => egui::CursorIcon::Default,
+        });
+        if ctx.input(|i| i.pointer.primary_pressed()) {
+            let _ = win.drag_resize_window(dir);
+        }
+    }
+
     /// 录制全局热键：读取本帧按下的组合键，成功则保存并通知后台重注册
     fn poll_hotkey_capture(&mut self, ctx: &egui::Context) {
         let which = match self.capture {
@@ -447,6 +503,8 @@ impl eframe::App for BossKeyApp {
         let win = frame.winit_window().cloned();
         let c = Self::palette(self.theme_light);
         self.poll_hotkey_capture(&ctx);
+        // 无边框窗口：边缘拖拽缩放
+        self.drag_resize(&ctx, win.as_deref(), ui.max_rect());
         // 更新检查结果（后台线程 → 主线程）
         if let Some(rx) = &self.update_rx {
             if let Ok(st) = rx.try_recv() {
