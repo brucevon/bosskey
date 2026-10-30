@@ -24,12 +24,136 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{GUID, PCWSTR, PWSTR, w};
 
+// ---------------- 全局热键 ----------------
+
+pub const MOD_ALT: u32 = 0x0001;
+pub const MOD_CONTROL: u32 = 0x0002;
+pub const MOD_SHIFT: u32 = 0x0004;
+pub const MOD_WIN: u32 = 0x0008;
+
+/// 全局热键：Win32 修饰键位 + 虚拟键码
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Hotkey {
+    pub mods: u32,
+    pub vk: u32,
+}
+
+impl Hotkey {
+    pub fn new(mods: u32, vk: u32) -> Self {
+        Hotkey { mods, vk }
+    }
+
+    /// 展示用文本，如 "Ctrl + Alt + H"
+    pub fn label(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.mods & MOD_CONTROL != 0 {
+            parts.push("Ctrl".to_string());
+        }
+        if self.mods & MOD_ALT != 0 {
+            parts.push("Alt".to_string());
+        }
+        if self.mods & MOD_SHIFT != 0 {
+            parts.push("Shift".to_string());
+        }
+        if self.mods & MOD_WIN != 0 {
+            parts.push("Win".to_string());
+        }
+        parts.push(key_name(self.vk));
+        parts.join(" + ")
+    }
+
+    /// 从 "Ctrl+Alt+H" 之类的文本解析（忽略大小写与空格）
+    pub fn parse(s: &str) -> Option<Self> {
+        let mut mods = 0u32;
+        let mut vk: Option<u32> = None;
+        for part in s.split('+') {
+            let p = part.trim();
+            if p.is_empty() {
+                continue;
+            }
+            match p.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => mods |= MOD_CONTROL,
+                "alt" => mods |= MOD_ALT,
+                "shift" => mods |= MOD_SHIFT,
+                "win" | "meta" => mods |= MOD_WIN,
+                _ => {
+                    if let Some(v) = vk_from_name(p) {
+                        vk = Some(v);
+                    }
+                }
+            }
+        }
+        match (vk, mods) {
+            (Some(vk), m) if m != 0 => Some(Hotkey { mods: m, vk }),
+            _ => None,
+        }
+    }
+}
+
+fn key_name(vk: u32) -> String {
+    match vk {
+        0x08 => "Backspace".into(),
+        0x09 => "Tab".into(),
+        0x0D => "Enter".into(),
+        0x1B => "Esc".into(),
+        0x20 => "Space".into(),
+        0x21 => "PageUp".into(),
+        0x22 => "PageDown".into(),
+        0x23 => "End".into(),
+        0x24 => "Home".into(),
+        0x25 => "Left".into(),
+        0x26 => "Up".into(),
+        0x27 => "Right".into(),
+        0x28 => "Down".into(),
+        0x2E => "Delete".into(),
+        0x30..=0x39 | 0x41..=0x5A => (vk as u8 as char).to_string(),
+        0x70..=0x87 => format!("F{}", vk - 0x6F),
+        _ => format!("VK_{vk:02X}"),
+    }
+}
+
+fn vk_from_name(name: &str) -> Option<u32> {
+    let up = name.trim().to_ascii_uppercase();
+    if up.len() == 1 {
+        let b = up.as_bytes()[0];
+        if b.is_ascii_uppercase() || b.is_ascii_digit() {
+            return Some(b as u32);
+        }
+    }
+    if let Some(num) = up.strip_prefix('F') {
+        if let Ok(i) = num.parse::<u32>() {
+            if (1..=24).contains(&i) {
+                return Some(0x6F + i);
+            }
+        }
+    }
+    Some(match up.as_str() {
+        "BACKSPACE" => 0x08,
+        "TAB" => 0x09,
+        "ENTER" => 0x0D,
+        "ESC" | "ESCAPE" => 0x1B,
+        "SPACE" => 0x20,
+        "PAGEUP" | "PGUP" => 0x21,
+        "PAGEDOWN" | "PGDN" => 0x22,
+        "END" => 0x23,
+        "HOME" => 0x24,
+        "LEFT" => 0x25,
+        "UP" => 0x26,
+        "RIGHT" => 0x27,
+        "DOWN" => 0x28,
+        "DELETE" | "DEL" => 0x2E,
+        _ => return None,
+    })
+}
+
 // ---------------- 设置 ----------------
 
 #[derive(Clone, Copy)]
 pub struct Settings {
     pub restore_targets_on_start: bool,
     pub restore_on_exit: bool,
+    pub hotkey_targets: Hotkey,
+    pub hotkey_self: Hotkey,
 }
 
 impl Default for Settings {
@@ -37,6 +161,8 @@ impl Default for Settings {
         Settings {
             restore_targets_on_start: false,
             restore_on_exit: true,
+            hotkey_targets: Hotkey::new(MOD_CONTROL | MOD_ALT, 0x48), // Ctrl+Alt+H
+            hotkey_self: Hotkey::new(MOD_CONTROL | MOD_ALT, 0x42),    // Ctrl+Alt+B
         }
     }
 }
@@ -54,6 +180,16 @@ pub fn load_settings() -> Settings {
             match k.trim() {
                 "restore_targets_on_start" => s.restore_targets_on_start = v.trim() == "1",
                 "restore_on_exit" => s.restore_on_exit = v.trim() == "1",
+                "hotkey_targets" => {
+                    if let Some(h) = Hotkey::parse(v) {
+                        s.hotkey_targets = h;
+                    }
+                }
+                "hotkey_self" => {
+                    if let Some(h) = Hotkey::parse(v) {
+                        s.hotkey_self = h;
+                    }
+                }
                 _ => {}
             }
         }
@@ -65,8 +201,11 @@ pub fn save_settings(s: &Settings) {
     let _ = std::fs::write(
         settings_path(),
         format!(
-            "restore_targets_on_start={}\nrestore_on_exit={}\n",
-            s.restore_targets_on_start as u8, s.restore_on_exit as u8
+            "restore_targets_on_start={}\nrestore_on_exit={}\nhotkey_targets={}\nhotkey_self={}\n",
+            s.restore_targets_on_start as u8,
+            s.restore_on_exit as u8,
+            s.hotkey_targets.label(),
+            s.hotkey_self.label()
         ),
     );
 }

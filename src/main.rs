@@ -2,7 +2,7 @@
 //!
 //! 架构：
 //! - `core`    业务引擎（窗口/托盘隐藏恢复、进程扫描、设置）
-//! - `backend` Win32 消息线程（全局热键 Ctrl+Alt+H/B + 托盘图标）
+//! - `backend` Win32 消息线程（全局热键（设置页可自定义）+ 托盘图标）
 //! - `ui`      egui 界面（eframe）
 #![windows_subsystem = "windows"]
 
@@ -40,12 +40,15 @@ fn main() -> eframe::Result {
 
     let (tx, rx) = mpsc::channel();
     // Win32 消息线程：热键 + 托盘
-    backend::spawn(tx);
+    let settings = core::load_settings();
+    let hotkeys = backend::HotkeyCtl::new(settings.hotkey_targets, settings.hotkey_self);
+    backend::spawn(tx, hotkeys.clone());
 
     eframe::run_native(
         "BossKey",
         options,
         Box::new(move |cc| {
+            let hotkeys = hotkeys.clone();
             if let Some(data) = font_data {
                 let mut fonts = egui::FontDefinitions::default();
                 fonts.font_data.insert(
@@ -64,7 +67,7 @@ fn main() -> eframe::Result {
                     .push("cjk".to_owned());
                 cc.egui_ctx.set_fonts(fonts);
             }
-            Ok(Box::new(ui::BossKeyApp::new(rx)))
+            Ok(Box::new(ui::BossKeyApp::new(rx, hotkeys)))
         }),
     )
 }

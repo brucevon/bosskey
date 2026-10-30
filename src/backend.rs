@@ -7,13 +7,14 @@ use std::sync::mpsc::Sender;
 use std::thread;
 
 use std::io::Write;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_B,
-    VK_H,
+    HOT_KEY_MODIFIERS, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey,
 };
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS,
@@ -21,6 +22,8 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
+
+use crate::core::Hotkey;
 
 pub enum Evt {
     ToggleTargets,
@@ -31,6 +34,8 @@ pub enum Evt {
 }
 
 const WM_TRAYICON: u32 = WM_APP + 1;
+/// 通知消息线程改注册热键（UI → backend）
+const WM_HOTKEY_RELOAD: u32 = WM_APP + 2;
 const TRAY_UID: u32 = 1;
 const HOTKEY_TARGETS: i32 = 1;
 const HOTKEY_SELF: i32 = 2;
@@ -38,12 +43,41 @@ const IDM_SHOW: usize = 301;
 const IDM_SETTINGS: usize = 302;
 const IDM_EXIT: usize = 303;
 
+/// 热键配置：UI 修改后写这里，并通知消息线程重新注册
+pub struct HotkeyCtl {
+    tid: AtomicU32,
+    cfg: Mutex<(Hotkey, Hotkey)>,
+}
+
+impl HotkeyCtl {
+    pub fn new(targets: Hotkey, self_hk: Hotkey) -> Arc<Self> {
+        Arc::new(HotkeyCtl {
+            tid: AtomicU32::new(0),
+            cfg: Mutex::new((targets, self_hk)),
+        })
+    }
+
+    pub fn set(&self, targets: Hotkey, self_hk: Hotkey) {
+        *self.cfg.lock().unwrap() = (targets, self_hk);
+    }
+}
+
+/// 请求消息线程重新注册全局热键
+pub fn reload(ctl: &HotkeyCtl) {
+    let tid = ctl.tid.load(Ordering::SeqCst);
+    if tid != 0 {
+        unsafe {
+            let _ = PostThreadMessageW(tid, WM_HOTKEY_RELOAD, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// 启动消息线程（返回线程句柄；TID 通过 stdout 输出供测试）
-pub fn spawn(tx: Sender<Evt>) -> thread::JoinHandle<()> {
+pub fn spawn(tx: Sender<Evt>, ctl: Arc<HotkeyCtl>) -> thread::JoinHandle<()> {
     thread::spawn(move || unsafe {
         let module = GetModuleHandleW(None).unwrap_or_default();
         let instance = HINSTANCE(module.0);
@@ -79,10 +113,9 @@ pub fn spawn(tx: Sender<Evt>) -> thread::JoinHandle<()> {
         let tx_ptr = Box::into_raw(Box::new(tx));
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, tx_ptr as isize);
 
-        // 线程热键
-        let mods: HOT_KEY_MODIFIERS = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT;
-        let _ = RegisterHotKey(Some(HWND::default()), HOTKEY_TARGETS, mods, VK_H.0 as u32);
-        let _ = RegisterHotKey(Some(HWND::default()), HOTKEY_SELF, mods, VK_B.0 as u32);
+        // 线程热键（可在设置页自定义）+ 托盘图标
+        ctl.tid.store(GetCurrentThreadId(), Ordering::SeqCst);
+        register_hotkeys(&ctl);
 
         // 托盘图标
         tray_add(hwnd);
@@ -92,6 +125,11 @@ pub fn spawn(tx: Sender<Evt>) -> thread::JoinHandle<()> {
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            // 热键配置变更：重注册后继续
+            if msg.message == WM_HOTKEY_RELOAD {
+                register_hotkeys(&ctl);
+                continue;
+            }
             // 线程热键的 WM_HOTKEY 带空 hwnd，DispatchMessage 不路由——直接处理
             if msg.message == WM_HOTKEY {
                 let p = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Sender<Evt>;
@@ -117,6 +155,25 @@ pub fn spawn(tx: Sender<Evt>) -> thread::JoinHandle<()> {
         let _ = UnregisterHotKey(Some(HWND::default()), HOTKEY_SELF);
         let _ = Box::from_raw(tx_ptr);
     })
+}
+
+/// 按当前配置（重）注册两个全局热键
+unsafe fn register_hotkeys(ctl: &HotkeyCtl) {
+    let (targets, self_hk) = *ctl.cfg.lock().unwrap();
+    let _ = UnregisterHotKey(Some(HWND::default()), HOTKEY_TARGETS);
+    let _ = UnregisterHotKey(Some(HWND::default()), HOTKEY_SELF);
+    let _ = RegisterHotKey(
+        Some(HWND::default()),
+        HOTKEY_TARGETS,
+        HOT_KEY_MODIFIERS(targets.mods | MOD_NOREPEAT.0),
+        targets.vk,
+    );
+    let _ = RegisterHotKey(
+        Some(HWND::default()),
+        HOTKEY_SELF,
+        HOT_KEY_MODIFIERS(self_hk.mods | MOD_NOREPEAT.0),
+        self_hk.vk,
+    );
 }
 
 unsafe extern "system" fn msg_wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
@@ -217,7 +274,3 @@ unsafe fn tray_delete(hwnd: HWND) {
     };
     let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
 }
-
-// 避免未使用告警
-#[allow(dead_code)]
-fn _anchor(_: HOT_KEY_MODIFIERS) {}

@@ -128,10 +128,15 @@ pub struct BossKeyApp {
     icons: std::collections::HashMap<String, egui::TextureHandle>,
     pending_icons: std::collections::HashMap<String, Vec<u8>>,
     procs: Vec<(u32, String)>,
+    hotkeys: std::sync::Arc<crate::backend::HotkeyCtl>,
+    capture: Option<u8>, // Some(0)=一键隐藏目标 Some(1)=BossKey 显隐
 }
 
 impl BossKeyApp {
-    pub fn new(rx: Receiver<Evt>) -> Self {
+    pub fn new(
+        rx: Receiver<Evt>,
+        hotkeys: std::sync::Arc<crate::backend::HotkeyCtl>,
+    ) -> Self {
         let mut app = BossKeyApp {
             engine: Engine::new(),
             rx,
@@ -150,6 +155,8 @@ impl BossKeyApp {
             icons: std::collections::HashMap::new(),
             pending_icons: std::collections::HashMap::new(),
             procs: Vec::new(),
+            hotkeys,
+            capture: None,
         };
         app.rescan();
         app
@@ -240,6 +247,112 @@ impl BossKeyApp {
         }
         self.engine.set_targets(t);
     }
+
+    /// 录制全局热键：读取本帧按下的组合键，成功则保存并通知后台重注册
+    fn poll_hotkey_capture(&mut self, ctx: &egui::Context) {
+        let which = match self.capture {
+            Some(w) => w,
+            None => return,
+        };
+        ctx.request_repaint();
+
+        let mut pressed: Option<(egui::Key, egui::Modifiers)> = None;
+        ctx.input(|i| {
+            for ev in &i.events {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = ev
+                {
+                    pressed = Some((*key, *modifiers));
+                }
+            }
+        });
+        let (key, m) = match pressed {
+            Some(v) => v,
+            None => return,
+        };
+        if key == egui::Key::Escape {
+            self.capture = None;
+            return;
+        }
+        let vk = match vk_of(key) {
+            Some(v) => v,
+            None => return,
+        };
+        let mut mods = 0u32;
+        if m.ctrl {
+            mods |= core::MOD_CONTROL;
+        }
+        if m.alt {
+            mods |= core::MOD_ALT;
+        }
+        if m.shift {
+            mods |= core::MOD_SHIFT;
+        }
+        if mods == 0 {
+            self.toast("请至少按住 Ctrl / Alt / Shift 之一");
+            return;
+        }
+        let hk = core::Hotkey::new(mods, vk);
+        let mut s = self.engine.settings;
+        let other = if which == 0 {
+            s.hotkey_self
+        } else {
+            s.hotkey_targets
+        };
+        if hk == other {
+            self.toast("两个快捷键不能相同");
+            return;
+        }
+        if which == 0 {
+            s.hotkey_targets = hk;
+        } else {
+            s.hotkey_self = hk;
+        }
+        self.engine.set_settings(s);
+        self.hotkeys.set(s.hotkey_targets, s.hotkey_self);
+        crate::backend::reload(&self.hotkeys);
+        self.capture = None;
+        let msg = format!("快捷键已更新：{}", hk.label());
+        self.toast(&msg);
+    }
+}
+
+/// egui 按键 → Win32 虚拟键码（仅常用键；不支持返回 None）
+fn vk_of(key: egui::Key) -> Option<u32> {
+    use egui::Key as K;
+    Some(match key {
+        K::A => 0x41, K::B => 0x42, K::C => 0x43, K::D => 0x44, K::E => 0x45,
+        K::F => 0x46, K::G => 0x47, K::H => 0x48, K::I => 0x49, K::J => 0x4A,
+        K::K => 0x4B, K::L => 0x4C, K::M => 0x4D, K::N => 0x4E, K::O => 0x4F,
+        K::P => 0x50, K::Q => 0x51, K::R => 0x52, K::S => 0x53, K::T => 0x54,
+        K::U => 0x55, K::V => 0x56, K::W => 0x57, K::X => 0x58, K::Y => 0x59,
+        K::Z => 0x5A,
+        K::Num0 => 0x30, K::Num1 => 0x31, K::Num2 => 0x32, K::Num3 => 0x33,
+        K::Num4 => 0x34, K::Num5 => 0x35, K::Num6 => 0x36, K::Num7 => 0x37,
+        K::Num8 => 0x38, K::Num9 => 0x39,
+        K::F1 => 0x70, K::F2 => 0x71, K::F3 => 0x72, K::F4 => 0x73,
+        K::F5 => 0x74, K::F6 => 0x75, K::F7 => 0x76, K::F8 => 0x77,
+        K::F9 => 0x78, K::F10 => 0x79, K::F11 => 0x7A, K::F12 => 0x7B,
+        K::Space => 0x20,
+        K::Enter => 0x0D,
+        K::Tab => 0x09,
+        K::Backspace => 0x08,
+        K::Delete => 0x2E,
+        K::Insert => 0x2D,
+        K::Home => 0x24,
+        K::End => 0x23,
+        K::PageUp => 0x21,
+        K::PageDown => 0x22,
+        K::ArrowLeft => 0x25,
+        K::ArrowUp => 0x26,
+        K::ArrowRight => 0x27,
+        K::ArrowDown => 0x28,
+        _ => return None,
+    })
 }
 
 impl eframe::App for BossKeyApp {
@@ -298,6 +411,7 @@ impl eframe::App for BossKeyApp {
         let ctx = ui.ctx().clone();
         let win = frame.winit_window().cloned();
         let c = Self::palette(self.theme_light);
+        self.poll_hotkey_capture(&ctx);
         self.ensure_icons(&ctx);
         if self.logo.is_none() {
             let img = egui::ColorImage::from_rgba_unmultiplied(
@@ -418,9 +532,11 @@ impl eframe::App for BossKeyApp {
                 ui.add_space(15.0);
                 ui.horizontal(|ui| {
                     ui.add_space(20.0);
-                    label_chip(ui, c, "一键隐藏目标:", "Ctrl + Alt + H", true);
+                    let hk_targets = self.engine.settings.hotkey_targets.label();
+                    let hk_self = self.engine.settings.hotkey_self.label();
+                    label_chip(ui, c, "一键隐藏目标:", &hk_targets, true);
                     ui.add_space(16.0);
-                    label_chip(ui, c, "BossKey显隐:", "Ctrl + Alt + B", false);
+                    label_chip(ui, c, "BossKey显隐:", &hk_self, false);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(20.0);
                         if chip_button(ui, "退出BossKey", c.rose_bg, c.rose_bg, c.rose_bd, c.rose, 108.0)
@@ -670,12 +786,25 @@ impl eframe::App for BossKeyApp {
                         ui.label(RichText::new("快捷键").size(11.0).color(c.text_mute));
                     });
                     ui.add_space(6.0);
+                    let hk_t = self.engine.settings.hotkey_targets;
+                    let hk_s = self.engine.settings.hotkey_self;
+                    let cap = self.capture;
+                    let mut action: Option<u8> = None;
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
-                        label_chip(ui, c, "一键隐藏目标:", "Ctrl + Alt + H", true);
-                        ui.add_space(16.0);
-                        label_chip(ui, c, "BossKey显隐:", "Ctrl + Alt + B", false);
+                        if hotkey_row(ui, c, "一键隐藏目标", hk_t, cap == Some(0)) {
+                            action = Some(0);
+                        }
                     });
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
+                        if hotkey_row(ui, c, "BossKey 显隐", hk_s, cap == Some(1)) {
+                            action = Some(1);
+                        }
+                    });
+                    if let Some(which) = action {
+                        self.capture = if cap == Some(which) { None } else { Some(which) };
+                    }
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
@@ -709,7 +838,7 @@ impl eframe::App for BossKeyApp {
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
                         ui.label(
-                            RichText::new("改动即时生效并保存 · 热键暂不支持自定义")
+                            RichText::new("改动即时生效并保存 · 快捷键点「修改」后按下新组合键")
                                 .size(10.0)
                                 .color(c.text_mute),
                         );
@@ -1074,14 +1203,66 @@ fn kbd_chip(ui: &mut egui::Ui, c: Palette, text: &str, accent: bool) {
     paint_kbd(ui.painter(), c, rect, text, accent);
 }
 
-/// 「标签 + 键帽」同轴行：文字与键帽垂直居中对齐
+/// 设置页一行：名称 + 键帽 + 修改/取消按钮（返回按钮是否被点击）
+/// 名称列与键帽宽度固定，保证两行按钮左右对齐
+fn hotkey_row(ui: &mut egui::Ui, c: Palette, name: &str, hk: core::Hotkey, capturing: bool) -> bool {
+    const NAME_W: f32 = 106.0;
+    const CHIP_W: f32 = 156.0;
+    const ROW_H: f32 = 36.0; // 与「修改」按钮等高，避免视觉错位
+    let (lrect, _) = ui.allocate_exact_size(Vec2::new(NAME_W, ROW_H), Sense::hover());
+    ui.painter().text(
+        Pos2::new(lrect.left(), lrect.center().y),
+        Align2::LEFT_CENTER,
+        name,
+        FontId::proportional(11.5),
+        c.text_dim,
+    );
+    let text = if capturing {
+        "按下组合键…".to_string()
+    } else {
+        hk.label()
+    };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(CHIP_W, ROW_H), Sense::hover());
+    // 键帽与「修改」按钮同尺寸同圆角，整行视觉齐平
+    let p = ui.painter();
+    p.rect_filled(rect, 8.0, c.card);
+    p.rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(1.0, c.border),
+        egui::StrokeKind::Inside,
+    );
+    p.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        &text,
+        FontId::monospace(11.0),
+        c.kbd_accent,
+    );
+    ui.add_space(10.0);
+    let label = if capturing { "取消" } else { "修改" };
+    chip_button(ui, label, c.card, c.border, c.border, c.text_dim, 72.0)
+}
+
+/// 「标签 + 键帽」同轴行：文字与键帽垂直居中对齐（键帽宽度随内容自适应）
 fn label_chip(ui: &mut egui::Ui, c: Palette, label: &str, keys: &str, accent: bool) {
     let lw = ui
         .painter()
         .layout_no_wrap(label.to_string(), FontId::proportional(11.0), c.text_mute)
         .size()
         .x;
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(lw + 8.0 + 118.0, 26.0), Sense::hover());
+    let kw = ui
+        .painter()
+        .layout_no_wrap(
+            keys.to_string(),
+            FontId::monospace(11.0),
+            if accent { c.kbd_accent } else { c.text_dim },
+        )
+        .size()
+        .x
+        + 22.0;
+    let kw = kw.max(118.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(lw + 8.0 + kw, 26.0), Sense::hover());
     let painter = ui.painter();
     let cy = rect.center().y;
     painter.text(
@@ -1093,7 +1274,7 @@ fn label_chip(ui: &mut egui::Ui, c: Palette, label: &str, keys: &str, accent: bo
     );
     let chip = Rect::from_min_size(
         Pos2::new(rect.left() + lw + 8.0, rect.top()),
-        Vec2::new(118.0, 26.0),
+        Vec2::new(kw, 26.0),
     );
     paint_kbd(painter, c, chip, keys, accent);
 }
