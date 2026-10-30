@@ -14,6 +14,16 @@ if (-not $Version) {
     }
 }
 
+# ---- 发布前校验：版本号必须与 Cargo.toml 一致，工作区必须干净 ----
+$cargoVer = (Select-String -Path "$root\Cargo.toml" -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+if ($cargoVer -ne $Version) {
+    throw "版本不一致：打包版本 $Version，Cargo.toml $cargoVer。请先统一版本号（并打对应 tag）后再打包"
+}
+$dirty = @(git -C $root status --porcelain)
+if ($dirty) {
+    throw "工作区存在未提交改动，先提交再打包：`n$($dirty -join "`n")"
+}
+
 Write-Host "版本: $Version"
 cargo build --release 2>&1 | Select-Object -Last 1
 New-Item -ItemType Directory -Force -Path "$root\dist" | Out-Null

@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "bosskey"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "eframe",
  "windows",
