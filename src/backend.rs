@@ -31,6 +31,8 @@ pub enum Evt {
     ShowUi,
     OpenSettings,
     Exit,
+    /// 重新注册后的热键状态（false = 注册失败，通常被其它程序占用）
+    HotkeyStatus { targets_ok: bool, self_ok: bool },
 }
 
 const WM_TRAYICON: u32 = WM_APP + 1;
@@ -113,13 +115,14 @@ pub fn spawn(tx: Sender<Evt>, ctl: Arc<HotkeyCtl>) -> thread::JoinHandle<()> {
             Err(_) => return,
         };
         // wnd_proc 通过 GWLP_USERDATA 拿 Sender
+        let status_tx = tx.clone();
         let tx_ptr = Box::into_raw(Box::new(tx));
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, tx_ptr as isize);
         TRAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
 
         // 线程热键（可在设置页自定义）+ 托盘图标
         ctl.tid.store(GetCurrentThreadId(), Ordering::SeqCst);
-        register_hotkeys(&ctl);
+        register_hotkeys(&ctl, &status_tx);
 
         // 托盘图标
         tray_add(hwnd);
@@ -131,7 +134,7 @@ pub fn spawn(tx: Sender<Evt>, ctl: Arc<HotkeyCtl>) -> thread::JoinHandle<()> {
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             // 热键配置变更：重注册后继续
             if msg.message == WM_HOTKEY_RELOAD {
-                register_hotkeys(&ctl);
+                register_hotkeys(&ctl, &status_tx);
                 continue;
             }
             // 线程热键的 WM_HOTKEY 带空 hwnd，DispatchMessage 不路由——直接处理
@@ -162,23 +165,29 @@ pub fn spawn(tx: Sender<Evt>, ctl: Arc<HotkeyCtl>) -> thread::JoinHandle<()> {
     })
 }
 
-/// 按当前配置（重）注册两个全局热键
-unsafe fn register_hotkeys(ctl: &HotkeyCtl) {
+/// 按当前配置（重）注册两个全局热键，并把结果回传 UI
+unsafe fn register_hotkeys(ctl: &HotkeyCtl, tx: &Sender<Evt>) {
     let (targets, self_hk) = *ctl.cfg.lock().unwrap();
     let _ = UnregisterHotKey(Some(HWND::default()), HOTKEY_TARGETS);
     let _ = UnregisterHotKey(Some(HWND::default()), HOTKEY_SELF);
-    let _ = RegisterHotKey(
+    let targets_ok = RegisterHotKey(
         Some(HWND::default()),
         HOTKEY_TARGETS,
         HOT_KEY_MODIFIERS(targets.mods | MOD_NOREPEAT.0),
         targets.vk,
-    );
-    let _ = RegisterHotKey(
+    )
+    .is_ok();
+    let self_ok = RegisterHotKey(
         Some(HWND::default()),
         HOTKEY_SELF,
         HOT_KEY_MODIFIERS(self_hk.mods | MOD_NOREPEAT.0),
         self_hk.vk,
-    );
+    )
+    .is_ok();
+    let _ = tx.send(Evt::HotkeyStatus {
+        targets_ok,
+        self_ok,
+    });
 }
 
 unsafe extern "system" fn msg_wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {

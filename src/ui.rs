@@ -1,5 +1,6 @@
 //! ui — egui 界面（设计稿风格：zinc 深色 / 靛紫主行动 / 状态徽章）
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -133,6 +134,11 @@ pub struct BossKeyApp {
     settings_tab: u8,    // 设置页左目录：0=常规 1=快捷键 2=检查更新 3=关于
     update: UpdateState,
     update_rx: Option<Receiver<UpdateState>>,
+    upgrade: UpgradeState,
+    upgrade_rx: Option<Receiver<UpgradeMsg>>,
+    confirm_upgrade: bool,
+    /// 后台线程回传的热键注册状态：(一键隐藏目标, BossKey 显隐)
+    hotkey_status: Option<(bool, bool)>,
 }
 
 /// 「检查更新」状态
@@ -141,6 +147,21 @@ enum UpdateState {
     Checking,
     Latest(String),
     Newer(String),
+    Failed(String),
+}
+
+/// 「立即升级」的下载状态
+enum UpgradeState {
+    Idle,
+    Downloading { path: PathBuf, total: Option<u64> },
+    Ready { path: PathBuf },
+    Failed(String),
+}
+
+/// 下载线程 → UI 的进度事件
+enum UpgradeMsg {
+    Total(Option<u64>),
+    Done(PathBuf),
     Failed(String),
 }
 
@@ -172,6 +193,10 @@ impl BossKeyApp {
             settings_tab: 0,
             update: UpdateState::Idle,
             update_rx: None,
+            upgrade: UpgradeState::Idle,
+            upgrade_rx: None,
+            confirm_upgrade: false,
+            hotkey_status: None,
         };
         app.rescan();
         app
@@ -265,6 +290,12 @@ impl BossKeyApp {
 
     /// 后台检查 GitHub 最新 Release
     fn start_update_check(&mut self) {
+        // 重新检查时清空上一次的下载/升级状态（下载中则保持）
+        if !matches!(self.upgrade, UpgradeState::Downloading { .. }) {
+            self.upgrade = UpgradeState::Idle;
+            self.upgrade_rx = None;
+            self.confirm_upgrade = false;
+        }
         self.update = UpdateState::Checking;
         let (tx, rx) = std::sync::mpsc::channel();
         self.update_rx = Some(rx);
@@ -281,6 +312,124 @@ impl BossKeyApp {
             };
             let _ = tx.send(st);
         });
+    }
+
+    /// 后台下载更新安装包（文件大小由 UI 侧轮询，用于进度显示）
+    fn start_upgrade(&mut self, tag: &str) {
+        let tag = tag.to_string();
+        let path = core::installer_path(&tag);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.upgrade = UpgradeState::Downloading { path, total: None };
+        self.upgrade_rx = Some(rx);
+        std::thread::spawn(move || {
+            let total = core::installer_total_size(&tag);
+            let _ = tx.send(UpgradeMsg::Total(total));
+            match core::download_installer(&tag, total) {
+                Ok(p) => {
+                    let _ = tx.send(UpgradeMsg::Done(p));
+                }
+                Err(e) => {
+                    let _ = tx.send(UpgradeMsg::Failed(e));
+                }
+            }
+        });
+    }
+
+    /// 「立即升级」区域：按下载状态渲染按钮与进度
+    fn upgrade_controls(&mut self, ui: &mut egui::Ui, c: Palette, tag: &str) {
+        let mut start = false;
+        let mut prompt = false;
+        let mut reveal: Option<PathBuf> = None;
+        match &self.upgrade {
+            UpgradeState::Idle => {
+                if chip_button(ui, "立即升级", c.indigo, c.indigo, c.indigo, Color32::WHITE, 108.0) {
+                    start = true;
+                }
+            }
+            UpgradeState::Downloading { path, total } => {
+                let got = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                let text = match total {
+                    Some(t) if *t > 0 => format!(
+                        "正在下载安装包… {:.1} / {:.1} MB",
+                        got as f64 / 1048576.0,
+                        *t as f64 / 1048576.0
+                    ),
+                    _ => format!("正在下载安装包… {:.1} MB", got as f64 / 1048576.0),
+                };
+                ui.label(RichText::new(text).size(11.0).color(c.text_dim));
+                ui.add_space(6.0);
+                let frac = match total {
+                    Some(t) if *t > 0 => (got as f32 / *t as f32).clamp(0.0, 1.0),
+                    _ => 0.0,
+                };
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(240.0, 6.0), Sense::hover());
+                let p = ui.painter();
+                p.rect_filled(rect, 3.0, c.border_soft);
+                if frac > 0.0 {
+                    p.rect_filled(
+                        Rect::from_min_size(
+                            rect.min,
+                            Vec2::new(rect.width() * frac, rect.height()),
+                        ),
+                        3.0,
+                        c.indigo,
+                    );
+                }
+            }
+            UpgradeState::Ready { path } => {
+                let path = path.clone();
+                ui.label(RichText::new("安装包已下载").size(11.0).color(c.emerald));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if chip_button(
+                        ui,
+                        "自动关闭并安装",
+                        c.indigo,
+                        c.indigo,
+                        c.indigo,
+                        Color32::WHITE,
+                        132.0,
+                    ) {
+                        prompt = true;
+                    }
+                    if chip_button(
+                        ui,
+                        "打开所在文件夹",
+                        c.card,
+                        c.hot_bg,
+                        c.border,
+                        c.text_dim,
+                        132.0,
+                    ) {
+                        reveal = Some(path);
+                    }
+                });
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("也可退出 BossKey 后手动运行该安装包")
+                        .size(10.0)
+                        .color(c.text_mute),
+                );
+            }
+            UpgradeState::Failed(e) => {
+                let e = e.clone();
+                ui.label(RichText::new(format!("下载失败：{e}")).size(11.0).color(c.rose));
+                ui.add_space(8.0);
+                if chip_button(ui, "重试下载", c.indigo, c.indigo, c.indigo, Color32::WHITE, 108.0)
+                {
+                    start = true;
+                }
+            }
+        }
+        if start {
+            self.start_upgrade(tag);
+        }
+        if prompt {
+            self.confirm_upgrade = true;
+        }
+        if let Some(p) = reveal {
+            core::reveal_in_explorer(&p);
+        }
     }
 
     /// 无边框窗口：贴近边缘 5px 时显示缩放光标，按下即以对应方向拖拽缩放
@@ -478,6 +627,23 @@ impl eframe::App for BossKeyApp {
                     self.exiting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
+                Evt::HotkeyStatus { targets_ok, self_ok } => {
+                    self.hotkey_status = Some((targets_ok, self_ok));
+                    let mut failed = Vec::new();
+                    if !targets_ok {
+                        failed.push(self.engine.settings.hotkey_targets.label());
+                    }
+                    if !self_ok {
+                        failed.push(self.engine.settings.hotkey_self.label());
+                    }
+                    if !failed.is_empty() {
+                        let msg = format!(
+                            "热键注册失败（可能已被占用）：{}",
+                            failed.join("、")
+                        );
+                        self.toast(&msg);
+                    }
+                }
             }
         }
 
@@ -515,6 +681,31 @@ impl eframe::App for BossKeyApp {
             if let Ok(st) = rx.try_recv() {
                 self.update = st;
                 self.update_rx = None;
+            }
+        }
+        // 升级包下载结果与进度（后台线程 → 主线程）
+        let mut up_msgs = Vec::new();
+        if let Some(rx) = &self.upgrade_rx {
+            while let Ok(m) = rx.try_recv() {
+                up_msgs.push(m);
+            }
+        }
+        for m in up_msgs {
+            match m {
+                UpgradeMsg::Total(t) => {
+                    if let UpgradeState::Downloading { total, .. } = &mut self.upgrade {
+                        *total = t;
+                    }
+                }
+                UpgradeMsg::Done(p) => {
+                    self.upgrade = UpgradeState::Ready { path: p };
+                    self.confirm_upgrade = true;
+                    self.upgrade_rx = None;
+                }
+                UpgradeMsg::Failed(e) => {
+                    self.upgrade = UpgradeState::Failed(e);
+                    self.upgrade_rx = None;
+                }
             }
         }
         self.ensure_icons(&ctx);
@@ -998,6 +1189,26 @@ impl eframe::App for BossKeyApp {
                                                 action = Some(1);
                                             }
                                         });
+                                        if let Some((t_ok, s_ok)) = self.hotkey_status {
+                                            let mut failed = Vec::new();
+                                            if !t_ok {
+                                                failed.push(hk_t.label());
+                                            }
+                                            if !s_ok {
+                                                failed.push(hk_s.label());
+                                            }
+                                            if !failed.is_empty() {
+                                                ui.add_space(8.0);
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "{} 注册失败，可能已被其他程序占用",
+                                                        failed.join("、")
+                                                    ))
+                                                    .size(10.5)
+                                                    .color(c.rose),
+                                                );
+                                            }
+                                        }
                                         if let Some(which) = action {
                                             self.capture =
                                                 if cap == Some(which) { None } else { Some(which) };
@@ -1064,11 +1275,14 @@ impl eframe::App for BossKeyApp {
                                                 );
                                             }
                                             UpdateState::Newer(tag) => {
+                                                let tag = tag.clone();
                                                 ui.label(
                                                     RichText::new(format!("发现新版本 {tag}"))
                                                         .size(11.5)
                                                         .color(c.amber),
                                                 );
+                                                ui.add_space(8.0);
+                                                self.upgrade_controls(ui, c, &tag);
                                                 ui.add_space(8.0);
                                                 if chip_button(
                                                     ui,
@@ -1299,6 +1513,200 @@ impl eframe::App for BossKeyApp {
             // Esc 取消
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.confirm_exit = false;
+            }
+        }
+
+        // ================= 升级确认弹窗 =================
+        if self.confirm_upgrade {
+            let screen = ui.max_rect();
+            let dim = if self.theme_light {
+                Color32::from_rgba_unmultiplied(15, 23, 42, 110)
+            } else {
+                Color32::from_black_alpha(170)
+            };
+            let ver = match &self.update {
+                UpdateState::Newer(t) => t.clone(),
+                _ => String::new(),
+            };
+            // 0=无操作 1=取消 2=手动关闭 3=自动关闭并安装
+            let mut action = 0u8;
+            egui::Area::new(egui::Id::new("upgrade_modal"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(screen.min)
+                .interactable(true)
+                .show(ui.ctx(), |ui| {
+                    // 遮罩同时吞掉下层点击
+                    ui.allocate_rect(screen, Sense::click());
+                    ui.painter().rect_filled(screen, 0.0, dim);
+
+                    let card =
+                        Rect::from_center_size(screen.center(), Vec2::new(486.0, 226.0));
+                    let p = ui.painter().clone();
+                    p.rect_filled(
+                        card.translate(Vec2::new(0.0, 12.0)),
+                        16.0,
+                        Color32::from_black_alpha(if self.theme_light { 40 } else { 80 }),
+                    );
+                    p.rect_filled(card, 16.0, c.panel);
+                    p.rect_stroke(
+                        card,
+                        16.0,
+                        Stroke::new(1.0, c.border),
+                        egui::StrokeKind::Inside,
+                    );
+
+                    // 升级图标
+                    let ic = Pos2::new(card.left() + 42.0, card.top() + 44.0);
+                    p.circle_filled(ic, 18.0, c.checked_bg);
+                    p.circle_stroke(ic, 18.0, Stroke::new(1.0, c.indigo));
+                    p.text(ic, Align2::CENTER_CENTER, "↑", FontId::proportional(18.0), c.indigo);
+
+                    // 标题 / 说明
+                    let title = p.layout_no_wrap(
+                        format!("升级到 {ver}"),
+                        FontId::proportional(15.0),
+                        c.text,
+                    );
+                    p.galley(
+                        Pos2::new(card.left() + 74.0, card.top() + 33.0),
+                        title,
+                        c.text,
+                    );
+                    let msg = p.layout(
+                        "升级需要关闭 BossKey 才能替换程序文件。".to_string(),
+                        FontId::proportional(12.5),
+                        c.text_dim,
+                        380.0,
+                    );
+                    p.galley(
+                        Pos2::new(card.left() + 74.0, card.top() + 60.0),
+                        msg,
+                        c.text_dim,
+                    );
+
+                    // 分隔线
+                    let dy = card.bottom() - 72.0;
+                    p.line_segment(
+                        [
+                            Pos2::new(card.left() + 24.0, dy),
+                            Pos2::new(card.right() - 24.0, dy),
+                        ],
+                        Stroke::new(1.0, c.border_soft),
+                    );
+
+                    // 按钮：右对齐，自动安装在最右
+                    let auto_btn = Rect::from_min_size(
+                        Pos2::new(card.right() - 24.0 - 132.0, card.bottom() - 60.0),
+                        Vec2::new(132.0, 36.0),
+                    );
+                    let manual_btn = Rect::from_min_size(
+                        Pos2::new(auto_btn.left() - 12.0 - 92.0, auto_btn.top()),
+                        Vec2::new(92.0, 36.0),
+                    );
+                    let cancel_btn = Rect::from_min_size(
+                        Pos2::new(manual_btn.left() - 12.0 - 72.0, auto_btn.top()),
+                        Vec2::new(72.0, 36.0),
+                    );
+                    let cresp =
+                        ui.interact(cancel_btn, egui::Id::new("upgrade_cancel"), Sense::click());
+                    let mresp =
+                        ui.interact(manual_btn, egui::Id::new("upgrade_manual"), Sense::click());
+                    let aresp =
+                        ui.interact(auto_btn, egui::Id::new("upgrade_auto"), Sense::click());
+
+                    // 取消
+                    let (cbg, cbd, cfg) = if cresp.hovered() {
+                        (c.hot_bg, c.border, c.text)
+                    } else {
+                        (c.card, c.border, c.text_dim)
+                    };
+                    p.rect_filled(cancel_btn, 8.0, cbg);
+                    p.rect_stroke(
+                        cancel_btn,
+                        8.0,
+                        Stroke::new(1.0, cbd),
+                        egui::StrokeKind::Inside,
+                    );
+                    p.text(
+                        cancel_btn.center(),
+                        Align2::CENTER_CENTER,
+                        "取消",
+                        FontId::proportional(12.0),
+                        cfg,
+                    );
+
+                    // 手动关闭
+                    let (mbg, mbd, mfg) = if mresp.hovered() {
+                        (c.hot_bg, c.border, c.text)
+                    } else {
+                        (c.card, c.border, c.text_dim)
+                    };
+                    p.rect_filled(manual_btn, 8.0, mbg);
+                    p.rect_stroke(
+                        manual_btn,
+                        8.0,
+                        Stroke::new(1.0, mbd),
+                        egui::StrokeKind::Inside,
+                    );
+                    p.text(
+                        manual_btn.center(),
+                        Align2::CENTER_CENTER,
+                        "手动关闭",
+                        FontId::proportional(12.0),
+                        mfg,
+                    );
+
+                    // 自动关闭并安装
+                    let (abg, abd, afg) = if aresp.hovered() {
+                        (c.indigo.gamma_multiply(0.88), c.indigo, Color32::WHITE)
+                    } else {
+                        (c.indigo, c.indigo, Color32::WHITE)
+                    };
+                    p.rect_filled(auto_btn, 8.0, abg);
+                    p.rect_stroke(
+                        auto_btn,
+                        8.0,
+                        Stroke::new(1.0, abd),
+                        egui::StrokeKind::Inside,
+                    );
+                    p.text(
+                        auto_btn.center(),
+                        Align2::CENTER_CENTER,
+                        "自动关闭并安装",
+                        FontId::proportional(12.0),
+                        afg,
+                    );
+
+                    if cresp.clicked() {
+                        action = 1;
+                    }
+                    if mresp.clicked() {
+                        action = 2;
+                    }
+                    if aresp.clicked() {
+                        action = 3;
+                    }
+                });
+            match action {
+                1 => self.confirm_upgrade = false,
+                2 => {
+                    self.confirm_upgrade = false;
+                    self.toast("安装包已下载，退出 BossKey 后手动运行即可");
+                }
+                3 => {
+                    self.confirm_upgrade = false;
+                    if let UpgradeState::Ready { path } = &self.upgrade {
+                        core::launch_installer(path);
+                    }
+                    self.engine.do_exit();
+                    self.exiting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                _ => {}
+            }
+            // Esc 取消
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.confirm_upgrade = false;
             }
         }
 

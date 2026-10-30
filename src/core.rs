@@ -5,16 +5,17 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use windows::Win32::Foundation::{
-    CloseHandle, COLORREF, ERROR_SUCCESS, HWND, LPARAM, POINT, RECT, TRUE, WPARAM,
+    CloseHandle, COLORREF, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GetLastError, HWND, LPARAM, POINT,
+    RECT, TRUE, WPARAM,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+    CreateMutexW, OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
     QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::Shell::{
@@ -279,6 +280,163 @@ pub fn version_newer(a: &str, b: &str) -> bool {
         }
     }
     false
+}
+
+/// 更新安装包文件名（与 scripts\release.ps1 产物命名一致）
+fn installer_name(tag: &str) -> String {
+    format!("BossKey_v{}.exe", tag.trim_start_matches('v'))
+}
+
+/// GitHub Release 中安装包的下载地址
+pub fn installer_url(tag: &str) -> String {
+    format!(
+        "https://github.com/brucevon/bosskey/releases/download/{tag}/{}",
+        installer_name(tag)
+    )
+}
+
+/// 安装包本地缓存路径（系统临时目录）
+pub fn installer_path(tag: &str) -> PathBuf {
+    std::env::temp_dir()
+        .join("BossKey_update")
+        .join(installer_name(tag))
+}
+
+/// 远端安装包大小（HEAD 探测，失败返回 None，仅用于进度显示）
+pub fn installer_total_size(tag: &str) -> Option<u64> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new("curl.exe")
+        .args(["-sS", "-I", "-L", "--max-time", "10", "-A", "BossKey"])
+        .arg(installer_url(tag))
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let body = String::from_utf8_lossy(&out.stdout);
+    body.lines().rev().find_map(|line| {
+        let (k, v) = line.trim().split_once(':')?;
+        if k.trim().eq_ignore_ascii_case("content-length") {
+            v.trim().parse::<u64>().ok()
+        } else {
+            None
+        }
+    })
+}
+
+/// 下载更新安装包到临时目录（覆盖已有文件）
+/// expected：远端文件大小，用于校验是否下完整（None 表示不校验）
+pub fn download_installer(tag: &str, expected: Option<u64>) -> Result<PathBuf, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let path = installer_path(tag);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("无法创建临时目录：{e}"))?;
+    }
+    let _ = std::fs::remove_file(&path);
+    let out = std::process::Command::new("curl.exe")
+        .args([
+            "-sS", "-f", "-L", "--retry", "2", "--retry-all-errors", "--max-time", "300",
+            "-A", "BossKey", "-o",
+        ])
+        .arg(&path)
+        .arg(installer_url(tag))
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("无法调用 curl：{e}"))?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("curl 退出码 {}", out.status.code().unwrap_or(-1)));
+    }
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        let _ = std::fs::remove_file(&path);
+        return Err("安装包内容为空".to_string());
+    }
+    if let Some(total) = expected {
+        if total > 0 && size != total {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("安装包大小不匹配（{size}/{total} 字节）"));
+        }
+    }
+    Ok(path)
+}
+
+/// 退出后运行安装包：延迟启动等待本进程释放 exe，静默安装并自动拉起新版本
+pub fn launch_installer(path: &Path) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    // 用 raw_arg 原样传入命令行：cmd 不认 Rust 的引号转义，自动转义会让命令解析失败
+    let cmd = format!(
+        "/C ping -n 3 127.0.0.1 >nul & start \"\" \"{}\" /SILENT /NORESTART",
+        path.display()
+    );
+    let _ = std::process::Command::new("cmd.exe")
+        .raw_arg(cmd)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+}
+
+/// 在资源管理器中选中指定文件
+pub fn reveal_in_explorer(path: &Path) {
+    let _ = std::process::Command::new("explorer.exe")
+        .arg(format!("/select,{}", path.display()))
+        .spawn();
+}
+
+// ---------------- 单实例 ----------------
+
+/// 抢占单实例互斥体：true = 本进程是唯一实例；
+/// 已有实例时唤醒它的窗口 / 托盘，返回 false（调用方应直接退出）
+pub fn claim_single_instance() -> bool {
+    let name = wide("BossKey.SingleInstance");
+    unsafe {
+        let handle = CreateMutexW(None, true, PCWSTR(name.as_ptr()));
+        let already = GetLastError() == ERROR_ALREADY_EXISTS;
+        match handle {
+            Ok(h) => {
+                // 互斥体句柄要保持到进程结束，故意不释放
+                std::mem::forget(h);
+                if already {
+                    activate_instance();
+                    false
+                } else {
+                    true
+                }
+            }
+            // 创建失败属于极端情况，此时不阻塞启动
+            Err(_) => true,
+        }
+    }
+}
+
+/// 唤醒已在运行的实例：可见则前置，隐藏则投递「本体显隐」热键消息（窗口与托盘一起恢复）
+fn activate_instance() {
+    unsafe {
+        let title = wide("BossKey");
+        let Ok(hwnd) = FindWindowW(None, PCWSTR(title.as_ptr())) else {
+            return;
+        };
+        if IsWindowVisible(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+            let _ = SetForegroundWindow(hwnd);
+            return;
+        }
+        let class = wide("BossKeyMsgWindow");
+        let msg_title = wide("BossKeyMsg");
+        let Ok(msgwnd) = FindWindowW(
+            PCWSTR(class.as_ptr()),
+            PCWSTR(msg_title.as_ptr()),
+        ) else {
+            return;
+        };
+        let mut pid = 0u32;
+        let tid = GetWindowThreadProcessId(msgwnd, Some(&mut pid));
+        // wParam=2 对应 backend 的 HOTKEY_SELF
+        let _ = PostThreadMessageW(tid, WM_HOTKEY, WPARAM(2), LPARAM(0));
+    }
 }
 
 // ---------------- 配置（目标记录）----------------

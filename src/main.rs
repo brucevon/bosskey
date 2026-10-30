@@ -15,6 +15,10 @@ use std::sync::mpsc;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    // 单实例：已有实例在跑时唤醒它并退出本次启动
+    if !core::claim_single_instance() {
+        return Ok(());
+    }
     // 中文字体：从系统字体目录加载（保证 exe 仍是单文件绿色版）
     let font_data = [
         r"C:\Windows\Fonts\simhei.ttf",

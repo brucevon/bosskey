@@ -47,4 +47,4 @@ Name: "{group}\{#AppName}"; Filename: "{app}\BossKey.exe"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\BossKey.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\BossKey.exe"; Description: "启动 {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\BossKey.exe"; Description: "启动 {#AppName}"; Flags: nowait postinstall
