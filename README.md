@@ -26,6 +26,7 @@ Windows 老板键工具：一键隐藏 / 恢复指定程序的痕迹。
 | windows（windows-rs） | 0.61 | Win32 API：全局热键、托盘图标、窗口与进程枚举 |
 | winres | 0.1 | 构建期写入 exe 图标与版本资源 |
 | PowerShell | 7+ | 打包（`scripts/release.ps1`）与冒烟测试脚本 |
+| Inno Setup | 6 | 生成安装版 `BossKey_v<版本>.exe` |
 
 ## 编译
 
@@ -36,11 +37,12 @@ cargo build --release
 # 产物：target\release\bosskey.exe
 ```
 
-可选：以 git tag 版本号打包重命名产物
+可选：按 git tag 版本号出两个产物（安装版需 [Inno Setup 6](https://jrsoftware.org/isinfo.php)）
 
 ```powershell
 powershell -File scripts\release.ps1
-# 产物：dist\BossKey-<版本>.exe
+# 安装版：dist\BossKey_v<版本>.exe
+# 绿色版：dist\BossKey_Portable_v<版本>.exe
 ```
 
 ## 开源协议
