@@ -7,7 +7,7 @@ use std::sync::mpsc::Sender;
 use std::thread;
 
 use std::io::Write;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
@@ -17,8 +17,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey,
 };
 use windows::Win32::UI::Shell::{
-    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS,
-    Shell_NotifyIconW,
+    NIF_ICON, NIF_MESSAGE, NIF_STATE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_STATE, NIS_HIDDEN, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
@@ -42,6 +42,9 @@ const HOTKEY_SELF: i32 = 2;
 const IDM_SHOW: usize = 301;
 const IDM_SETTINGS: usize = 302;
 const IDM_EXIT: usize = 303;
+
+/// 托盘图标宿主窗口句柄（消息线程创建后写入，0 表示尚未就绪）
+static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
 
 /// 热键配置：UI 修改后写这里，并通知消息线程重新注册
 pub struct HotkeyCtl {
@@ -112,6 +115,7 @@ pub fn spawn(tx: Sender<Evt>, ctl: Arc<HotkeyCtl>) -> thread::JoinHandle<()> {
         // wnd_proc 通过 GWLP_USERDATA 拿 Sender
         let tx_ptr = Box::into_raw(Box::new(tx));
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, tx_ptr as isize);
+        TRAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
 
         // 线程热键（可在设置页自定义）+ 托盘图标
         ctl.tid.store(GetCurrentThreadId(), Ordering::SeqCst);
@@ -151,6 +155,7 @@ pub fn spawn(tx: Sender<Evt>, ctl: Arc<HotkeyCtl>) -> thread::JoinHandle<()> {
         }
 
         tray_delete(hwnd);
+        TRAY_HWND.store(0, Ordering::SeqCst);
         let _ = UnregisterHotKey(Some(HWND::default()), HOTKEY_TARGETS);
         let _ = UnregisterHotKey(Some(HWND::default()), HOTKEY_SELF);
         let _ = Box::from_raw(tx_ptr);
@@ -273,4 +278,30 @@ unsafe fn tray_delete(hwnd: HWND) {
         ..Default::default()
     };
     let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+}
+
+/// 显示 / 隐藏本程序托盘图标（与 BossKey 本体显隐联动）
+pub fn set_tray_visible(visible: bool) {
+    let h = TRAY_HWND.load(Ordering::SeqCst);
+    if h == 0 {
+        return;
+    }
+    unsafe { tray_set_hidden(HWND(h as *mut std::ffi::c_void), !visible) }
+}
+
+unsafe fn tray_set_hidden(hwnd: HWND, hidden: bool) {
+    let nid = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: TRAY_UID,
+        uFlags: NOTIFY_ICON_DATA_FLAGS(NIF_STATE.0),
+        dwState: if hidden {
+            NIS_HIDDEN
+        } else {
+            NOTIFY_ICON_STATE(0)
+        },
+        dwStateMask: NIS_HIDDEN,
+        ..Default::default()
+    };
+    let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
 }

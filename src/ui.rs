@@ -460,14 +460,17 @@ impl eframe::App for BossKeyApp {
                     self.self_visible = !self.self_visible;
                     let _ = writeln!(std::io::stdout(), "[ui] ToggleSelf -> {}", self.self_visible);
                     core::set_self_visible(self.self_visible);
+                    crate::backend::set_tray_visible(self.self_visible);
                 }
                 Evt::ShowUi => {
                     self.self_visible = true;
                     core::set_self_visible(true);
+                    crate::backend::set_tray_visible(true);
                 }
                 Evt::OpenSettings => {
                     self.self_visible = true;
                     core::set_self_visible(true);
+                    crate::backend::set_tray_visible(true);
                     self.page = 1;
                 }
                 Evt::Exit => {
@@ -487,6 +490,8 @@ impl eframe::App for BossKeyApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.self_visible = false;
             core::set_self_visible(false);
+            // 驻托盘时保留托盘图标
+            crate::backend::set_tray_visible(true);
             return;
         }
 
@@ -594,6 +599,8 @@ impl eframe::App for BossKeyApp {
                         if win_btn(ui, c, 2) {
                             self.self_visible = false;
                             core::set_self_visible(false);
+                            // 驻托盘时保留托盘图标
+                            crate::backend::set_tray_visible(true);
                         }
                         if win_btn(ui, c, 1) {
                             self.maxed = !self.maxed;
