@@ -481,7 +481,6 @@ impl BossKeyApp {
             ResizeDirection::NorthWest => egui::CursorIcon::ResizeNorthWest,
             ResizeDirection::SouthEast => egui::CursorIcon::ResizeSouthEast,
             ResizeDirection::SouthWest => egui::CursorIcon::ResizeSouthWest,
-            _ => egui::CursorIcon::Default,
         });
         if ctx.input(|i| i.pointer.primary_pressed()) {
             let _ = win.drag_resize_window(dir);
@@ -596,8 +595,7 @@ fn vk_of(key: egui::Key) -> Option<u32> {
 }
 
 impl eframe::App for BossKeyApp {
-    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        let win = frame.winit_window().cloned();
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // ---- 后台事件 ----
         while let Ok(evt) = self.rx.try_recv() {
             match evt {
@@ -730,7 +728,7 @@ impl eframe::App for BossKeyApp {
             .exact_size(44.0)
             .frame(egui::Frame::NONE.fill(c.bg_header))
             .show(ui, |ui| {
-                let drag = ui.interact(ui.max_rect(), ui.id().with("title_drag"), Sense::click_and_drag());
+                let drag = ui.interact(ui.max_rect(), ui.scope_id().with("title_drag"), Sense::click_and_drag());
                 if drag.dragged() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
@@ -1402,7 +1400,7 @@ impl eframe::App for BossKeyApp {
             } else {
                 Color32::from_black_alpha(170)
             };
-            egui::Area::new(egui::Id::new("exit_modal"))
+            egui::Area::new(egui::Id::unique("exit_modal"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(screen.min)
                 .interactable(true)
@@ -1466,8 +1464,8 @@ impl eframe::App for BossKeyApp {
                         Pos2::new(confirm.left() - 12.0 - 88.0, confirm.top()),
                         Vec2::new(88.0, 36.0),
                     );
-                    let cresp = ui.interact(cancel, egui::Id::new("exit_cancel"), Sense::click());
-                    let okresp = ui.interact(confirm, egui::Id::new("exit_confirm"), Sense::click());
+                    let cresp = ui.interact(cancel, egui::Id::unique("exit_cancel"), Sense::click());
+                    let okresp = ui.interact(confirm, egui::Id::unique("exit_confirm"), Sense::click());
 
                     // 取消按钮
                     let (cbg, cbd, cfg) = if cresp.hovered() {
@@ -1530,7 +1528,7 @@ impl eframe::App for BossKeyApp {
             };
             // 0=无操作 1=取消 2=手动关闭 3=自动关闭并安装
             let mut action = 0u8;
-            egui::Area::new(egui::Id::new("upgrade_modal"))
+            egui::Area::new(egui::Id::unique("upgrade_modal"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(screen.min)
                 .interactable(true)
@@ -1608,11 +1606,11 @@ impl eframe::App for BossKeyApp {
                         Vec2::new(72.0, 36.0),
                     );
                     let cresp =
-                        ui.interact(cancel_btn, egui::Id::new("upgrade_cancel"), Sense::click());
+                        ui.interact(cancel_btn, egui::Id::unique("upgrade_cancel"), Sense::click());
                     let mresp =
-                        ui.interact(manual_btn, egui::Id::new("upgrade_manual"), Sense::click());
+                        ui.interact(manual_btn, egui::Id::unique("upgrade_manual"), Sense::click());
                     let aresp =
-                        ui.interact(auto_btn, egui::Id::new("upgrade_auto"), Sense::click());
+                        ui.interact(auto_btn, egui::Id::unique("upgrade_auto"), Sense::click());
 
                     // 取消
                     let (cbg, cbd, cfg) = if cresp.hovered() {
@@ -1713,7 +1711,7 @@ impl eframe::App for BossKeyApp {
         // ================= Toast =================
         if let Some((msg, at)) = self.toast.clone() {
             if at.elapsed() < Duration::from_secs(2) {
-                egui::Area::new(egui::Id::new("toast"))
+                egui::Area::new(egui::Id::unique("toast"))
                     .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-24.0, -92.0))
                     .interactable(false)
                     .show(ui, |ui| {
@@ -1888,7 +1886,7 @@ fn menu_item(ui: &mut egui::Ui, c: Palette, text: &str) -> bool {
 /// 自绘搜索框：圆角面板底 + 细描边 + 放大镜；聚焦时描边转靛紫
 fn search_field(ui: &mut egui::Ui, c: Palette, text: &mut String, width: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 36.0), Sense::hover());
-    let box_id = ui.id().with("search_box");
+    let box_id = ui.scope_id().with("search_box");
     let hit = ui.interact(rect, box_id.with("hit"), Sense::click());
 
     ui.painter().rect_filled(rect, 8.0, c.panel);
@@ -1913,8 +1911,7 @@ fn search_field(ui: &mut egui::Ui, c: Palette, text: &mut String, width: f32) {
             .desired_width(text_rect.width())
             .font(FontId::proportional(12.5))
             .text_color(c.text)
-            .horizontal_align(egui::Align::LEFT)
-            .vertical_align(egui::Align::Center)
+            .align(Align2::LEFT_CENTER)
             .hint_text("搜索进程名或窗口标题..."),
     );
     if hit.clicked() && !edit.has_focus() {
@@ -1937,11 +1934,6 @@ fn search_field(ui: &mut egui::Ui, c: Palette, text: &mut String, width: f32) {
     if focused {
         p.rect_stroke(rect, 8.0, Stroke::new(1.0, c.indigo), egui::StrokeKind::Inside);
     }
-}
-
-fn kbd_chip(ui: &mut egui::Ui, c: Palette, text: &str, accent: bool) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(118.0, 26.0), Sense::hover());
-    paint_kbd(ui.painter(), c, rect, text, accent);
 }
 
 /// 设置页左侧目录项（图标 + 文字，选中态带靛紫指示条）
@@ -2039,15 +2031,6 @@ fn nav_item(ui: &mut egui::Ui, c: Palette, text: &str, icon: u8, active: bool) -
 
 fn section_title(ui: &mut egui::Ui, c: Palette, text: &str) {
     ui.label(RichText::new(text).size(13.0).strong().color(c.text));
-}
-
-fn divider(ui: &mut egui::Ui, c: Palette) {
-    let r = ui.available_rect_before_wrap();
-    let y = r.top();
-    ui.painter().line_segment(
-        [Pos2::new(r.left(), y), Pos2::new(r.left() + r.width(), y)],
-        Stroke::new(1.0, c.border_soft),
-    );
 }
 
 fn info_row(ui: &mut egui::Ui, c: Palette, k: &str, v: &str) {

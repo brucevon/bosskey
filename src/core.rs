@@ -399,8 +399,8 @@ pub fn claim_single_instance() -> bool {
         let already = GetLastError() == ERROR_ALREADY_EXISTS;
         match handle {
             Ok(h) => {
-                // 互斥体句柄要保持到进程结束，故意不释放
-                std::mem::forget(h);
+                // 互斥体句柄要保持到进程结束：HANDLE 为 Copy，离开作用域也不会关闭
+                let _ = h;
                 if already {
                     activate_instance();
                     false
@@ -591,16 +591,14 @@ fn file_description(wpath: &[u16]) -> Option<String> {
         }
         // 语言对（缺失时用常见代码页兜底）
         let mut pairs_buf: Vec<u16> = Vec::new();
-        unsafe {
-            let mut tp: *mut c_void = std::ptr::null_mut();
-            let mut tl = 0u32;
-            let tkey = wide(r"\VarFileInfo\Translation");
-            if VerQueryValueW(buf.as_ptr() as *const c_void, PCWSTR(tkey.as_ptr()), &mut tp, &mut tl)
-                .as_bool()
-                && !tp.is_null()
-            {
-                pairs_buf = std::slice::from_raw_parts(tp as *const u16, tl as usize / 2).to_vec();
-            }
+        let mut tp: *mut c_void = std::ptr::null_mut();
+        let mut tl = 0u32;
+        let tkey = wide(r"\VarFileInfo\Translation");
+        if VerQueryValueW(buf.as_ptr() as *const c_void, PCWSTR(tkey.as_ptr()), &mut tp, &mut tl)
+            .as_bool()
+            && !tp.is_null()
+        {
+            pairs_buf = std::slice::from_raw_parts(tp as *const u16, tl as usize / 2).to_vec();
         }
         if pairs_buf.is_empty() {
             pairs_buf = vec![0x0409, 0x04B0, 0x0409, 0x04E4, 0x0804, 0x04B0, 0x0000, 0x04B0];
@@ -739,10 +737,6 @@ pub fn running_processes() -> Vec<(u32, String)> {
     list
 }
 
-pub fn running_exe_names() -> Vec<String> {
-    running_processes().into_iter().map(|(_, n)| n).collect()
-}
-
 // ---------------- 托盘图标身份与隐藏 ----------------
 
 pub struct TrayRegEntry {
@@ -815,7 +809,7 @@ pub fn tray_registry_entries() -> Vec<TrayRegEntry> {
                 Some(&mut size),
             );
             if q != ERROR_SUCCESS || ty != REG_SZ {
-                RegCloseKey(sub).ok();
+                let _ = RegCloseKey(sub);
                 continue;
             }
             let n = (size / 2) as usize;
@@ -823,7 +817,7 @@ pub fn tray_registry_entries() -> Vec<TrayRegEntry> {
             let path = path.trim().trim_matches('"');
             let exe = path.rsplit(['\\', '/']).next().unwrap_or("").to_string();
             if exe.is_empty() || is_self(&exe) {
-                RegCloseKey(sub).ok();
+                let _ = RegCloseKey(sub);
                 continue;
             }
 
@@ -864,13 +858,13 @@ pub fn tray_registry_entries() -> Vec<TrayRegEntry> {
                     guid = parse_guid(&gs);
                 }
             }
-            RegCloseKey(sub).ok();
+            let _ = RegCloseKey(sub);
 
             if guid.is_some() || uid.is_some() {
                 out.push(TrayRegEntry { exe, uid, guid });
             }
         }
-        RegCloseKey(root).ok();
+        let _ = RegCloseKey(root);
     }
     out
 }
