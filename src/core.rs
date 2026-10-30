@@ -210,6 +210,77 @@ pub fn save_settings(s: &Settings) {
     );
 }
 
+// ---------------- 更新检查 / 外链 ----------------
+
+/// 用默认浏览器打开 URL
+pub fn open_url(url: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    unsafe {
+        let op = wide("open");
+        let file = wide(url);
+        let _ = ShellExecuteW(
+            None,
+            PCWSTR(op.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
+/// 检查 GitHub 最新 Release 的 tag（如 "v0.1.15"）
+/// 走 releases.atom（避开 API 未登录限流），使用系统自带 curl.exe 发起 HTTPS 请求
+pub fn check_latest_release() -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new("curl.exe")
+        .args([
+            "-sS",
+            "-L",
+            "--max-time",
+            "15",
+            "-A",
+            "BossKey",
+            "https://github.com/brucevon/bosskey/releases.atom",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("无法调用 curl：{e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "请求失败（curl 退出码 {}）",
+            out.status.code().unwrap_or(-1)
+        ));
+    }
+    let body = String::from_utf8_lossy(&out.stdout);
+    body.split("releases/tag/")
+        .nth(1)
+        .and_then(|s| s.split(['"', '<', '?']).next())
+        .map(str::to_string)
+        .ok_or_else(|| "无法解析版本信息".to_string())
+}
+
+/// a 是否比 b 新（按 "1.2.3" 数字段比较，忽略前缀 v）
+pub fn version_newer(a: &str, b: &str) -> bool {
+    fn parts(v: &str) -> Vec<u32> {
+        v.trim()
+            .trim_start_matches('v')
+            .split('.')
+            .map(|s| s.parse::<u32>().unwrap_or(0))
+            .collect()
+    }
+    let (a, b) = (parts(a), parts(b));
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
 // ---------------- 配置（目标记录）----------------
 
 fn exe_dir_file(name: &str) -> PathBuf {

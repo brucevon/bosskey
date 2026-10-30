@@ -130,6 +130,18 @@ pub struct BossKeyApp {
     procs: Vec<(u32, String)>,
     hotkeys: std::sync::Arc<crate::backend::HotkeyCtl>,
     capture: Option<u8>, // Some(0)=一键隐藏目标 Some(1)=BossKey 显隐
+    settings_tab: u8,    // 设置页左目录：0=快捷键 1=检查更新 2=关于
+    update: UpdateState,
+    update_rx: Option<Receiver<UpdateState>>,
+}
+
+/// 「检查更新」状态
+enum UpdateState {
+    Idle,
+    Checking,
+    Latest(String),
+    Newer(String),
+    Failed(String),
 }
 
 impl BossKeyApp {
@@ -157,6 +169,9 @@ impl BossKeyApp {
             procs: Vec::new(),
             hotkeys,
             capture: None,
+            settings_tab: 0,
+            update: UpdateState::Idle,
+            update_rx: None,
         };
         app.rescan();
         app
@@ -246,6 +261,26 @@ impl BossKeyApp {
             t.push(exe.to_string());
         }
         self.engine.set_targets(t);
+    }
+
+    /// 后台检查 GitHub 最新 Release
+    fn start_update_check(&mut self) {
+        self.update = UpdateState::Checking;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_rx = Some(rx);
+        std::thread::spawn(move || {
+            let st = match core::check_latest_release() {
+                Ok(tag) => {
+                    if core::version_newer(&tag, env!("CARGO_PKG_VERSION")) {
+                        UpdateState::Newer(tag)
+                    } else {
+                        UpdateState::Latest(tag)
+                    }
+                }
+                Err(e) => UpdateState::Failed(e),
+            };
+            let _ = tx.send(st);
+        });
     }
 
     /// 录制全局热键：读取本帧按下的组合键，成功则保存并通知后台重注册
@@ -412,6 +447,13 @@ impl eframe::App for BossKeyApp {
         let win = frame.winit_window().cloned();
         let c = Self::palette(self.theme_light);
         self.poll_hotkey_capture(&ctx);
+        // 更新检查结果（后台线程 → 主线程）
+        if let Some(rx) = &self.update_rx {
+            if let Ok(st) = rx.try_recv() {
+                self.update = st;
+                self.update_rx = None;
+            }
+        }
         self.ensure_icons(&ctx);
         if self.logo.is_none() {
             let img = egui::ColorImage::from_rgba_unmultiplied(
@@ -767,7 +809,7 @@ impl eframe::App for BossKeyApp {
                     self.toggle_target(&exe);
                 }
                 } else {
-                    // ================= 设置页（新页面，非弹窗）=================
+                    // ================= 设置页（左目录 + 右内容）=================
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
@@ -776,72 +818,284 @@ impl eframe::App for BossKeyApp {
                         }
                     });
                     ui.add_space(10.0);
-                    ui.horizontal(|ui| {
+
+                    let mut tab_click: Option<u8> = None;
+                    ui.horizontal_top(|ui| {
                         ui.add_space(20.0);
-                        ui.label(RichText::new("设置").size(16.0).strong().color(c.text));
-                    });
-                    ui.add_space(16.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(20.0);
-                        ui.label(RichText::new("快捷键").size(11.0).color(c.text_mute));
-                    });
-                    ui.add_space(6.0);
-                    let hk_t = self.engine.settings.hotkey_targets;
-                    let hk_s = self.engine.settings.hotkey_self;
-                    let cap = self.capture;
-                    let mut action: Option<u8> = None;
-                    ui.horizontal(|ui| {
-                        ui.add_space(20.0);
-                        if hotkey_row(ui, c, "一键隐藏目标", hk_t, cap == Some(0)) {
-                            action = Some(0);
+                        // ---- 左侧目录 ----
+                        ui.vertical(|ui| {
+                            ui.set_width(176.0);
+                            ui.label(RichText::new("设置").size(16.0).strong().color(c.text));
+                            ui.add_space(12.0);
+                            for (i, (name, icon)) in [
+                                ("快捷键设置", 0u8),
+                                ("检查更新", 1u8),
+                                ("关于 BossKey", 2u8),
+                            ]
+                            .iter()
+                            .enumerate()
+                            {
+                                if nav_item(ui, c, name, *icon, self.settings_tab == i as u8) {
+                                    tab_click = Some(i as u8);
+                                }
+                                ui.add_space(4.0);
+                            }
+                        });
+                        if let Some(t) = tab_click {
+                            self.settings_tab = t;
                         }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.add_space(20.0);
-                        if hotkey_row(ui, c, "BossKey 显隐", hk_s, cap == Some(1)) {
-                            action = Some(1);
-                        }
-                    });
-                    if let Some(which) = action {
-                        self.capture = if cap == Some(which) { None } else { Some(which) };
-                    }
-                    ui.add_space(14.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(20.0);
-                        ui.label(RichText::new("行为").size(11.0).color(c.text_mute));
-                    });
-                    ui.add_space(6.0);
-                    let mut s = self.engine.settings;
-                    let mut changed = false;
-                    ui.horizontal(|ui| {
-                        ui.add_space(20.0);
-                        if ui
-                            .checkbox(&mut s.restore_targets_on_start, "启动时恢复上次勾选的目标")
-                            .changed()
-                        {
-                            changed = true;
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.add_space(20.0);
-                        if ui
-                            .checkbox(&mut s.restore_on_exit, "退出时恢复被隐藏的目标")
-                            .changed()
-                        {
-                            changed = true;
-                        }
-                    });
-                    if changed {
-                        self.engine.set_settings(s);
-                    }
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(20.0);
-                        ui.label(
-                            RichText::new("改动即时生效并保存 · 快捷键点「修改」后按下新组合键")
-                                .size(10.0)
-                                .color(c.text_mute),
-                        );
+                        ui.add_space(16.0);
+                        // ---- 右侧内容卡片 ----
+                        egui::Frame::NONE
+                            .fill(c.panel)
+                            .stroke(Stroke::new(1.0, c.border_soft))
+                            .corner_radius(12.0)
+                            .inner_margin(egui::Margin::same(18))
+                            .show(ui, |ui| {
+                                ui.vertical(|ui| {
+                                ui.set_width(540.0);
+                                match self.settings_tab {
+                                    0 => {
+                                        // ======== 快捷键设置 ========
+                                        section_title(ui, c, "快捷键设置");
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            RichText::new("点「修改」后按下组合键；Esc 取消")
+                                                .size(10.5)
+                                                .color(c.text_mute),
+                                        );
+                                        ui.add_space(12.0);
+                                        let hk_t = self.engine.settings.hotkey_targets;
+                                        let hk_s = self.engine.settings.hotkey_self;
+                                        let cap = self.capture;
+                                        let mut action: Option<u8> = None;
+                                        ui.horizontal(|ui| {
+                                            if hotkey_row(
+                                                ui,
+                                                c,
+                                                "一键隐藏目标",
+                                                hk_t,
+                                                cap == Some(0),
+                                            ) {
+                                                action = Some(0);
+                                            }
+                                        });
+                                        ui.add_space(6.0);
+                                        ui.horizontal(|ui| {
+                                            if hotkey_row(
+                                                ui,
+                                                c,
+                                                "BossKey 显隐",
+                                                hk_s,
+                                                cap == Some(1),
+                                            ) {
+                                                action = Some(1);
+                                            }
+                                        });
+                                        if let Some(which) = action {
+                                            self.capture =
+                                                if cap == Some(which) { None } else { Some(which) };
+                                        }
+                                        ui.add_space(12.0);
+                                        divider(ui, c);
+                                        ui.add_space(10.0);
+                                        ui.label(
+                                            RichText::new("行为").size(11.0).color(c.text_mute),
+                                        );
+                                        ui.add_space(4.0);
+                                        let mut s = self.engine.settings;
+                                        let mut changed = false;
+                                        if ui
+                                            .checkbox(
+                                                &mut s.restore_targets_on_start,
+                                                "启动时恢复上次勾选的目标",
+                                            )
+                                            .changed()
+                                        {
+                                            changed = true;
+                                        }
+                                        if ui
+                                            .checkbox(&mut s.restore_on_exit, "退出时恢复被隐藏的目标")
+                                            .changed()
+                                        {
+                                            changed = true;
+                                        }
+                                        if changed {
+                                            self.engine.set_settings(s);
+                                        }
+                                        ui.add_space(10.0);
+                                        ui.label(
+                                            RichText::new("改动即时生效并保存")
+                                                .size(10.0)
+                                                .color(c.text_mute),
+                                        );
+                                    }
+                                    1 => {
+                                        // ======== 检查更新 ========
+                                        section_title(ui, c, "检查更新");
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "当前版本 v{}",
+                                                env!("CARGO_PKG_VERSION")
+                                            ))
+                                            .size(11.0)
+                                            .color(c.text_dim),
+                                        );
+                                        ui.add_space(12.0);
+                                        let checking =
+                                            matches!(self.update, UpdateState::Checking);
+                                        if chip_button(
+                                            ui,
+                                            if checking { "检查中…" } else { "检查更新" },
+                                            c.indigo,
+                                            c.indigo,
+                                            c.indigo,
+                                            Color32::WHITE,
+                                            108.0,
+                                        ) && !checking
+                                        {
+                                            self.start_update_check();
+                                        }
+                                        ui.add_space(12.0);
+                                        match &self.update {
+                                            UpdateState::Idle => {
+                                                ui.label(
+                                                    RichText::new(
+                                                        "从 GitHub Releases 获取最新版本号",
+                                                    )
+                                                    .size(11.0)
+                                                    .color(c.text_mute),
+                                                );
+                                            }
+                                            UpdateState::Checking => {
+                                                ui.label(
+                                                    RichText::new("正在连接 GitHub…")
+                                                        .size(11.0)
+                                                        .color(c.text_dim),
+                                                );
+                                            }
+                                            UpdateState::Latest(tag) => {
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "已是最新版本（{tag}）"
+                                                    ))
+                                                    .size(11.5)
+                                                    .color(c.emerald),
+                                                );
+                                            }
+                                            UpdateState::Newer(tag) => {
+                                                ui.label(
+                                                    RichText::new(format!("发现新版本 {tag}"))
+                                                        .size(11.5)
+                                                        .color(c.amber),
+                                                );
+                                                ui.add_space(8.0);
+                                                if chip_button(
+                                                    ui,
+                                                    "打开发布页",
+                                                    c.card,
+                                                    c.hot_bg,
+                                                    c.border,
+                                                    c.text_dim,
+                                                    108.0,
+                                                ) {
+                                                    core::open_url(
+                                                        "https://github.com/brucevon/bosskey/releases",
+                                                    );
+                                                }
+                                            }
+                                            UpdateState::Failed(e) => {
+                                                ui.label(
+                                                    RichText::new(format!("检查失败：{e}"))
+                                                        .size(11.0)
+                                                        .color(c.rose),
+                                                );
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        // ======== 关于 BossKey ========
+                                        ui.horizontal(|ui| {
+                                            if let Some(tex) = &self.logo {
+                                                ui.add(
+                                                    egui::Image::new((
+                                                        tex.id(),
+                                                        Vec2::new(44.0, 44.0),
+                                                    ))
+                                                    .fit_to_exact_size(Vec2::new(44.0, 44.0)),
+                                                );
+                                            }
+                                            ui.add_space(12.0);
+                                            ui.vertical(|ui| {
+                                                ui.add_space(2.0);
+                                                ui.label(
+                                                    RichText::new("BossKey")
+                                                        .size(18.0)
+                                                        .strong()
+                                                        .color(c.text),
+                                                );
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "v{} · Windows 老板键",
+                                                        env!("CARGO_PKG_VERSION")
+                                                    ))
+                                                    .size(11.0)
+                                                    .color(c.text_mute),
+                                                );
+                                            });
+                                        });
+                                        ui.add_space(12.0);
+                                        ui.label(
+                                            RichText::new(
+                                                "一键隐藏 / 恢复指定程序的全部窗口与托盘图标，绿色单文件、免安装。",
+                                            )
+                                            .size(11.5)
+                                            .color(c.text_dim),
+                                        );
+                                        ui.add_space(14.0);
+                                        for (k, v) in [
+                                            ("仓库", "github.com/brucevon/bosskey"),
+                                            ("协议", "GPL-3.0"),
+                                            ("技术栈", "Rust · eframe/egui 0.37 · windows-rs 0.61"),
+                                            ("运行环境", "Windows 10+（单文件，无需安装）"),
+                                        ] {
+                                            info_row(ui, c, k, v);
+                                        }
+                                        ui.add_space(16.0);
+                                        ui.horizontal(|ui| {
+                                            if chip_button(
+                                                ui,
+                                                "打开仓库",
+                                                c.card,
+                                                c.hot_bg,
+                                                c.border,
+                                                c.text_dim,
+                                                96.0,
+                                            ) {
+                                                core::open_url(
+                                                    "https://github.com/brucevon/bosskey",
+                                                );
+                                            }
+                                            ui.add_space(8.0);
+                                            if chip_button(
+                                                ui,
+                                                "查看协议",
+                                                c.card,
+                                                c.hot_bg,
+                                                c.border,
+                                                c.text_dim,
+                                                96.0,
+                                            ) {
+                                                core::open_url(
+                                                    "https://github.com/brucevon/bosskey/blob/main/LICENSE",
+                                                );
+                                            }
+                                        });
+                                    }
+                                }
+                                });
+                            });
                     });
                 }
             });
@@ -1201,6 +1455,116 @@ fn search_field(ui: &mut egui::Ui, c: Palette, text: &mut String, width: f32) {
 fn kbd_chip(ui: &mut egui::Ui, c: Palette, text: &str, accent: bool) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(118.0, 26.0), Sense::hover());
     paint_kbd(ui.painter(), c, rect, text, accent);
+}
+
+/// 设置页左侧目录项（图标 + 文字，选中态带靛紫指示条）
+fn nav_item(ui: &mut egui::Ui, c: Palette, text: &str, icon: u8, active: bool) -> bool {
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 36.0), Sense::click());
+    let p = ui.painter();
+    if active {
+        p.rect_filled(rect, 8.0, c.panel);
+        p.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(rect.left(), rect.top() + 9.0),
+                Vec2::new(3.0, 18.0),
+            ),
+            2.0,
+            c.indigo,
+        );
+    } else if resp.hovered() {
+        p.rect_filled(rect, 8.0, c.hot_bg);
+    }
+    let col = if active { c.indigo } else { c.text_mute };
+    let ic = Pos2::new(rect.left() + 18.0, rect.center().y);
+    match icon {
+        0 => {
+            // 键帽
+            p.rect_stroke(
+                Rect::from_center_size(ic, Vec2::new(15.0, 10.0)),
+                2.5,
+                Stroke::new(1.0, col),
+                egui::StrokeKind::Inside,
+            );
+            p.line_segment(
+                [
+                    Pos2::new(ic.x - 4.0, ic.y + 2.0),
+                    Pos2::new(ic.x + 4.0, ic.y + 2.0),
+                ],
+                Stroke::new(1.0, col),
+            );
+        }
+        1 => {
+            // 刷新/更新
+            p.circle_stroke(ic, 5.0, Stroke::new(1.0, col));
+            p.line_segment(
+                [
+                    Pos2::new(ic.x + 2.0, ic.y - 5.6),
+                    Pos2::new(ic.x + 5.2, ic.y - 5.6),
+                ],
+                Stroke::new(1.5, col),
+            );
+            p.line_segment(
+                [
+                    Pos2::new(ic.x + 5.2, ic.y - 5.6),
+                    Pos2::new(ic.x + 4.0, ic.y - 2.6),
+                ],
+                Stroke::new(1.5, col),
+            );
+        }
+        _ => {
+            // 信息
+            p.circle_stroke(ic, 5.5, Stroke::new(1.0, col));
+            p.circle_filled(Pos2::new(ic.x, ic.y - 2.6), 0.9, col);
+            p.line_segment(
+                [
+                    Pos2::new(ic.x, ic.y - 0.8),
+                    Pos2::new(ic.x, ic.y + 3.2),
+                ],
+                Stroke::new(1.2, col),
+            );
+        }
+    }
+    p.text(
+        Pos2::new(rect.left() + 34.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        text,
+        FontId::proportional(12.0),
+        if active { c.text } else { c.text_dim },
+    );
+    resp.clicked()
+}
+
+fn section_title(ui: &mut egui::Ui, c: Palette, text: &str) {
+    ui.label(RichText::new(text).size(13.0).strong().color(c.text));
+}
+
+fn divider(ui: &mut egui::Ui, c: Palette) {
+    let r = ui.available_rect_before_wrap();
+    let y = r.top();
+    ui.painter().line_segment(
+        [Pos2::new(r.left(), y), Pos2::new(r.left() + r.width(), y)],
+        Stroke::new(1.0, c.border_soft),
+    );
+}
+
+fn info_row(ui: &mut egui::Ui, c: Palette, k: &str, v: &str) {
+    let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::hover());
+    let p = ui.painter();
+    p.text(
+        Pos2::new(r.left(), r.center().y),
+        Align2::LEFT_CENTER,
+        k,
+        FontId::proportional(11.0),
+        c.text_mute,
+    );
+    p.text(
+        Pos2::new(r.left() + 72.0, r.center().y),
+        Align2::LEFT_CENTER,
+        v,
+        FontId::proportional(11.5),
+        c.text_dim,
+    );
 }
 
 /// 设置页一行：名称 + 键帽 + 修改/取消按钮（返回按钮是否被点击）
