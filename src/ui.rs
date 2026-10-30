@@ -130,7 +130,7 @@ pub struct BossKeyApp {
     procs: Vec<(u32, String)>,
     hotkeys: std::sync::Arc<crate::backend::HotkeyCtl>,
     capture: Option<u8>, // Some(0)=一键隐藏目标 Some(1)=BossKey 显隐
-    settings_tab: u8,    // 设置页左目录：0=快捷键 1=检查更新 2=关于
+    settings_tab: u8,    // 设置页左目录：0=常规 1=快捷键 2=检查更新 3=关于
     update: UpdateState,
     update_rx: Option<Receiver<UpdateState>>,
 }
@@ -828,6 +828,7 @@ impl eframe::App for BossKeyApp {
                             ui.label(RichText::new("设置").size(16.0).strong().color(c.text));
                             ui.add_space(12.0);
                             for (i, (name, icon)) in [
+                                ("常规", 3u8),
                                 ("快捷键设置", 0u8),
                                 ("检查更新", 1u8),
                                 ("关于 BossKey", 2u8),
@@ -856,6 +857,46 @@ impl eframe::App for BossKeyApp {
                                 ui.set_width(540.0);
                                 match self.settings_tab {
                                     0 => {
+                                        // ======== 常规 ========
+                                        section_title(ui, c, "常规");
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            RichText::new("改动即时生效并保存")
+                                                .size(10.5)
+                                                .color(c.text_mute),
+                                        );
+                                        ui.add_space(12.0);
+                                        let mut s = self.engine.settings;
+                                        let mut changed = false;
+                                        if ui
+                                            .checkbox(
+                                                &mut s.restore_targets_on_start,
+                                                "启动时恢复上次勾选的目标",
+                                            )
+                                            .changed()
+                                        {
+                                            changed = true;
+                                        }
+                                        if ui
+                                            .checkbox(&mut s.restore_on_exit, "退出时恢复被隐藏的目标")
+                                            .changed()
+                                        {
+                                            changed = true;
+                                        }
+                                        if changed {
+                                            self.engine.set_settings(s);
+                                        }
+                                        ui.add_space(12.0);
+                                        ui.label(
+                                            RichText::new(
+                                                "「启动时恢复」在上次退出时存在隐藏目标才会生效；\
+                                                 「退出时恢复」作用于确认退出后的还原。",
+                                            )
+                                            .size(10.0)
+                                            .color(c.text_mute),
+                                        );
+                                    }
+                                    1 => {
                                         // ======== 快捷键设置 ========
                                         section_title(ui, c, "快捷键设置");
                                         ui.add_space(4.0);
@@ -897,40 +938,13 @@ impl eframe::App for BossKeyApp {
                                                 if cap == Some(which) { None } else { Some(which) };
                                         }
                                         ui.add_space(12.0);
-                                        divider(ui, c);
-                                        ui.add_space(10.0);
-                                        ui.label(
-                                            RichText::new("行为").size(11.0).color(c.text_mute),
-                                        );
-                                        ui.add_space(4.0);
-                                        let mut s = self.engine.settings;
-                                        let mut changed = false;
-                                        if ui
-                                            .checkbox(
-                                                &mut s.restore_targets_on_start,
-                                                "启动时恢复上次勾选的目标",
-                                            )
-                                            .changed()
-                                        {
-                                            changed = true;
-                                        }
-                                        if ui
-                                            .checkbox(&mut s.restore_on_exit, "退出时恢复被隐藏的目标")
-                                            .changed()
-                                        {
-                                            changed = true;
-                                        }
-                                        if changed {
-                                            self.engine.set_settings(s);
-                                        }
-                                        ui.add_space(10.0);
                                         ui.label(
                                             RichText::new("改动即时生效并保存")
                                                 .size(10.0)
                                                 .color(c.text_mute),
                                         );
                                     }
-                                    1 => {
+                                    2 => {
                                         // ======== 检查更新 ========
                                         section_title(ui, c, "检查更新");
                                         ui.add_space(4.0);
@@ -1511,6 +1525,21 @@ fn nav_item(ui: &mut egui::Ui, c: Palette, text: &str, icon: u8, active: bool) -
                 ],
                 Stroke::new(1.5, col),
             );
+        }
+        3 => {
+            // 常规（齿轮）
+            p.circle_stroke(ic, 4.2, Stroke::new(1.2, col));
+            for k in 0..6 {
+                let a = std::f32::consts::TAU * k as f32 / 6.0;
+                let (sn, cs) = (a.sin(), a.cos());
+                p.line_segment(
+                    [
+                        Pos2::new(ic.x + cs * 4.8, ic.y + sn * 4.8),
+                        Pos2::new(ic.x + cs * 6.6, ic.y + sn * 6.6),
+                    ],
+                    Stroke::new(1.6, col),
+                );
+            }
         }
         _ => {
             // 信息
