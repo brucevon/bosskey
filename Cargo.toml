@@ -1,6 +1,6 @@
 [package]
 name = "bosskey"
-version = "0.1.22"
+version = "0.1.24"
 edition = "2021"
 description = "Windows 老板键：一键隐藏/显示指定程序的窗口与托盘图标"
 license = "GPL-3.0-only"
