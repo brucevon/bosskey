@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use windows::Win32::Foundation::{
     CloseHandle, COLORREF, ERROR_ALREADY_EXISTS, ERROR_SUCCESS, GetLastError, HWND, LPARAM, POINT,
-    RECT, TRUE, WPARAM,
+    RECT, SetLastError, TRUE, WPARAM,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -393,6 +393,8 @@ pub fn reveal_in_explorer(path: &Path) {
 pub fn claim_single_instance() -> bool {
     let name = wide("BossKey.SingleInstance");
     unsafe {
+        // 先清零 last error：新建成功时系统不会清它，残留值可能导致误判为“已存在”
+        let _ = SetLastError(ERROR_SUCCESS);
         let handle = CreateMutexW(None, true, PCWSTR(name.as_ptr()));
         let already = GetLastError() == ERROR_ALREADY_EXISTS;
         match handle {
