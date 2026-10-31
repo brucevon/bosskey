@@ -1,0 +1,8 @@
+# 构建产物
+target/
+dist/
+
+# 编辑器本地配置
+.vs/
+.idea/
+*.user
