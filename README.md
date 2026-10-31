@@ -54,6 +54,11 @@ powershell -File scripts\release.ps1
 # 绿色版：dist\BossKey_Portable_v<版本>.exe
 ```
 
+## 素材与图标
+
+- 应用图标（`assets/bosskey.ico`、`assets/bosskey-256.rgba`）由 Google Gemini 生成，不含任何第三方商标或授权素材；仅用于本项目。
+- 如需替换图标，请同步更新本节说明，确保素材来源可追溯。
+
 ## 开源协议
 
 本项目采用 [GPL-3.0](LICENSE) 协议开源：
